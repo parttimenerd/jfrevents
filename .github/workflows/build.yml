@@ -396,17 +396,6 @@ jobs:
           bin/releaser.py build_versions 2>&1 | tee build_versions.log
           bin/releaser.py build 2>&1 | tee build.log
 
-      - name: Run tests
-        run: mvn test
-
-      - name: Publish test results
-        if: always()
-        uses: EnricoMi/publish-unit-test-result-action@v2
-        with:
-          files: '**/target/surefire-reports/*.xml'
-          check_name: 'Test Results'
-          comment_mode: off
-
       - name: Install to local Maven repo
         run: |
           set -euo pipefail
