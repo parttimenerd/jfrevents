@@ -235,16 +235,6 @@ When manually triggering the workflow, you can choose from these cache strategie
   - Cache is manually cleared or rebuild-jfr/rebuild-all mode is selected
 
 
-**Required GitHub Secrets:**
-- `MAVEN_USERNAME` - Maven Central (OSSRH) username
-- `MAVEN_PASSWORD` - Maven Central (OSSRH) password/token
-- `GPG_PRIVATE_KEY` - GPG private key for signing artifacts (export with `gpg --export-secret-keys --armor KEY_ID`)
-- `GPG_KEYNAME` - GPG key ID
-- `GPG_PASSPHRASE` - GPG key passphrase
-
-Use the [`bin/update_gh_secrets.sh`](bin/update_gh_secrets.sh) script to automatically update GitHub secrets from your local Maven configuration
-using the [GitHub CLI](https://cli.github.com/).
-
 ## Publishing of the website
 
 The website is built using the [website generator](./website) and is updated
