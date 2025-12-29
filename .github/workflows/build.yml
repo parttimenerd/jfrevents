@@ -1,4 +1,4 @@
-# Workflow version: 2.4.0
+# Workflow version: 2.5.0
 # Last updated: 2025-12-29
 name: Build and Deploy
 
@@ -462,22 +462,12 @@ jobs:
             target/*.xml
           retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
 
-      - name: Upload Maven artifacts for website
-        uses: actions/upload-artifact@v4
-        with:
-          name: maven-local-repo
-          path: |
-            ~/.m2/repository/me/bechberger/jfreventcollection/*/jfreventcollection-*.jar
-            ~/.m2/repository/me/bechberger/jfreventcollection/*/jfreventcollection-*.pom
-            ~/.m2/repository/me/bechberger/jfreventcollector/*/jfreventcollector-*.jar
-            ~/.m2/repository/me/bechberger/jfreventcollector/*/jfreventcollector-*.pom
-          retention-days: ${{ env.TEMP_ARTIFACT_RETENTION_DAYS }}
-
   deploy-website:
     name: Deploy Website
     needs: [changes, build]
     if: |
       always() && 
+      needs.changes.outputs.website == 'true' &&
       needs.build.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -518,11 +508,42 @@ jobs:
           restore-keys: |
             maven-website-${{ runner.os }}-
 
-      - name: Download Maven artifacts from build
+      - name: Download jfreventcollection artifacts from build
         uses: actions/download-artifact@v4
         with:
-          name: maven-local-repo
-          path: ~/.m2/repository/
+          name: jfr-artifacts-${{ needs.build.outputs.version }}
+          path: build-artifacts/
+
+      - name: Install jfreventcollection to local Maven repo
+        run: |
+          set -euo pipefail
+          
+          # Find the jfreventcollection JAR
+          COLLECTION_JAR=$(find build-artifacts -name "jfreventcollection-*.jar" -type f | head -1)
+          
+          if [ -z "$COLLECTION_JAR" ]; then
+            echo "ERROR: jfreventcollection JAR not found in build artifacts"
+            ls -R build-artifacts/
+            exit 1
+          fi
+          
+          echo "Found jfreventcollection JAR: $COLLECTION_JAR"
+          
+          # Extract version from filename (e.g., jfreventcollection-0.7-SNAPSHOT.jar -> 0.7-SNAPSHOT)
+          VERSION=$(basename "$COLLECTION_JAR" | sed 's/jfreventcollection-//' | sed 's/.jar$//')
+          
+          echo "Installing jfreventcollection:$VERSION to local Maven repository..."
+          
+          # Install to local Maven repo
+          mvn install:install-file \
+            -Dfile="$COLLECTION_JAR" \
+            -DgroupId=me.bechberger \
+            -DartifactId=jfreventcollection \
+            -Dversion="$VERSION" \
+            -Dpackaging=jar \
+            -DgeneratePom=true
+          
+          echo "✓ jfreventcollection:$VERSION installed successfully"
 
       - name: Build website generator and generate site
         run: |
