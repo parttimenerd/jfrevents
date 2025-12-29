@@ -466,8 +466,7 @@ jobs:
     name: Deploy Website
     needs: [changes, build]
     if: |
-      always() && 
-      needs.changes.outputs.website == 'true' &&
+      always() &&
       needs.build.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 45
