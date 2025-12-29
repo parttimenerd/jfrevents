@@ -37,7 +37,6 @@ env:
   ARTIFACT_RETENTION_DAYS: 90
   LOG_RETENTION_DAYS: 30
   TEMP_ARTIFACT_RETENTION_DAYS: 1
-  MIN_DISK_SPACE_KB: 10000000
   MIN_JFR_FILE_SIZE_BYTES: 1000
 
 jobs:
@@ -305,7 +304,10 @@ jobs:
       - name: Free up disk space if needed
         run: |
           set -euo pipefail
-        
+          
+          AVAILABLE=$(df / | tail -1 | awk '{print $4}')
+          echo "Available disk space: ${AVAILABLE}KB"
+          
           sudo rm -rf /usr/share/dotnet
           sudo rm -rf /usr/local/lib/android
           sudo rm -rf /opt/ghc
@@ -491,16 +493,11 @@ jobs:
           AVAILABLE=$(df / | tail -1 | awk '{print $4}')
           echo "Available disk space: ${AVAILABLE}KB"
           
-          if [ "$AVAILABLE" -lt ${{ env.MIN_DISK_SPACE_KB }} ]; then
-            echo "Low disk space detected, cleaning up..."
-            sudo rm -rf /usr/share/dotnet
-            sudo docker image prune --all --force
-            
-            NEW_AVAILABLE=$(df / | tail -1 | awk '{print $4}')
-            echo "Freed up $((NEW_AVAILABLE - AVAILABLE))KB"
-          else
-            echo "Sufficient disk space available, skipping cleanup"
-          fi
+          sudo rm -rf /usr/share/dotnet
+          sudo docker image prune --all --force
+          
+          NEW_AVAILABLE=$(df / | tail -1 | awk '{print $4}')
+          echo "Freed up $((NEW_AVAILABLE - AVAILABLE))KB"
 
       - name: Set up JDK
         uses: actions/setup-java@v4
