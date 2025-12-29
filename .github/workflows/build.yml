@@ -305,27 +305,15 @@ jobs:
       - name: Free up disk space if needed
         run: |
           set -euo pipefail
-          AVAILABLE=$(df / | tail -1 | awk '{print $4}')
-          echo "Available disk space: ${AVAILABLE}KB"
+        
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force
           
-          if [ "$AVAILABLE" -lt ${{ env.MIN_DISK_SPACE_KB }} ]; then
-            echo "Low disk space detected, cleaning up..."
-            sudo rm -rf /usr/share/dotnet
-            sudo rm -rf /usr/local/lib/android
-            sudo rm -rf /opt/ghc
-            sudo rm -rf /opt/hostedtoolcache/CodeQL
-            sudo docker image prune --all --force
-            
-            NEW_AVAILABLE=$(df / | tail -1 | awk '{print $4}')
-            echo "Freed up $((NEW_AVAILABLE - AVAILABLE))KB"
-            
-            if [ "$NEW_AVAILABLE" -lt ${{ env.MIN_DISK_SPACE_KB }} ]; then
-              echo "ERROR: Still insufficient disk space after cleanup: ${NEW_AVAILABLE}KB"
-              exit 1
-            fi
-          else
-            echo "Sufficient disk space available, skipping cleanup"
-          fi
+          NEW_AVAILABLE=$(df / | tail -1 | awk '{print $4}')
+          echo "Freed up $((NEW_AVAILABLE - AVAILABLE))KB"
 
       - name: Set up JDK
         uses: actions/setup-java@v4
