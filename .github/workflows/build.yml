@@ -427,23 +427,46 @@ jobs:
           mkdir -p artifacts-to-upload
           
           # Copy JARs from target directory (jfreventcollector)
-          cp target/*.jar artifacts-to-upload/ || true
-          cp target/*.xml artifacts-to-upload/ || true
+          echo "=== Copying jfreventcollector artifacts from target/ ==="
+          cp target/*.jar artifacts-to-upload/ 2>/dev/null || echo "No JAR files in target/"
+          cp target/*.xml artifacts-to-upload/ 2>/dev/null || echo "No XML files in target/"
           
           # Copy jfreventcollection JAR from Maven repository
           LOADER_VERSION="${{ steps.extract-version.outputs.version }}"
           LOADER_JAR="$HOME/.m2/repository/me/bechberger/jfreventcollection/${LOADER_VERSION}/jfreventcollection-${LOADER_VERSION}.jar"
           
+          echo "=== Looking for jfreventcollection JAR ==="
+          echo "Expected location: $LOADER_JAR"
+          
           if [ -f "$LOADER_JAR" ]; then
-            echo "Copying jfreventcollection JAR from Maven repository"
+            echo "✓ Found jfreventcollection JAR at expected location"
             cp "$LOADER_JAR" artifacts-to-upload/
+            
+            # Verify copy
+            COPIED_JAR="artifacts-to-upload/jfreventcollection-${LOADER_VERSION}.jar"
+            if [ ! -f "$COPIED_JAR" ]; then
+              echo "ERROR: Failed to copy JAR to artifacts-to-upload/"
+              exit 1
+            fi
+            
+            # Verify JAR content
+            echo "Verifying JAR contents..."
+            unzip -l "$COPIED_JAR" | grep "me/bechberger/collector/xml/Loader.class" || {
+              echo "ERROR: JAR does not contain expected Loader.class"
+              echo "JAR contents:"
+              unzip -l "$COPIED_JAR" | head -30
+              exit 1
+            }
+            echo "✓ JAR contains expected classes"
           else
-            echo "WARNING: jfreventcollection JAR not found at $LOADER_JAR"
-            echo "Looking for any jfreventcollection JARs in Maven repo..."
-            find "$HOME/.m2/repository/me/bechberger/jfreventcollection/" -name "*.jar" -type f || true
+            echo "ERROR: jfreventcollection JAR not found at $LOADER_JAR"
+            echo "Searching entire Maven repository..."
+            find "$HOME/.m2/repository/me/bechberger/" -type f -name "*.jar" 2>/dev/null || echo "No JARs found in Maven repo"
+            exit 1
           fi
           
-          echo "Artifacts prepared for upload:"
+          echo ""
+          echo "=== Artifacts prepared for upload ==="
           ls -lh artifacts-to-upload/
 
       - name: Validate build artifacts
@@ -549,8 +572,11 @@ jobs:
         run: |
           set -euo pipefail
           
-          # Find the jfreventcollection JAR
-          COLLECTION_JAR=$(find build-artifacts -name "jfreventcollection-*.jar" -type f | head -1)
+          echo "=== Debugging: Listing all downloaded artifacts ==="
+          ls -laR build-artifacts/
+          
+          # Find the jfreventcollection JAR (exclude sources/javadoc)
+          COLLECTION_JAR=$(find build-artifacts -name "jfreventcollection-*.jar" -type f ! -name "*-sources.jar" ! -name "*-javadoc.jar" | head -1)
           
           if [ -z "$COLLECTION_JAR" ]; then
             echo "ERROR: jfreventcollection JAR not found in build artifacts"
@@ -561,12 +587,21 @@ jobs:
           
           echo "Found jfreventcollection JAR: $COLLECTION_JAR"
           
+          # Validate the JAR file
+          JAR_SIZE=$(wc -c < "$COLLECTION_JAR")
+          echo "JAR size: $JAR_SIZE bytes"
+          
+          if [ "$JAR_SIZE" -lt 10000 ]; then
+            echo "ERROR: JAR file is too small ($JAR_SIZE bytes)"
+            exit 1
+          fi
+          
           # Extract version from filename (e.g., jfreventcollection-0.7-SNAPSHOT.jar -> 0.7-SNAPSHOT)
           VERSION=$(basename "$COLLECTION_JAR" | sed 's/jfreventcollection-//' | sed 's/.jar$//')
           
           echo "Installing jfreventcollection:$VERSION to local Maven repository..."
           
-          # Install to local Maven repo
+          # Install to local Maven repo with verbose output
           mvn install:install-file \
             -Dfile="$COLLECTION_JAR" \
             -DgroupId=me.bechberger \
@@ -575,7 +610,22 @@ jobs:
             -Dpackaging=jar \
             -DgeneratePom=true
           
+          # Verify installation
+          INSTALLED_JAR="$HOME/.m2/repository/me/bechberger/jfreventcollection/${VERSION}/jfreventcollection-${VERSION}.jar"
+          
+          if [ ! -f "$INSTALLED_JAR" ]; then
+            echo "ERROR: JAR was not installed to expected location: $INSTALLED_JAR"
+            echo "Checking Maven repository:"
+            find "$HOME/.m2/repository/me/bechberger/" -name "*.jar" -type f || echo "No JARs found"
+            exit 1
+          fi
+          
           echo "✓ jfreventcollection:$VERSION installed successfully"
+          echo "✓ Verified at: $INSTALLED_JAR"
+          
+          # Verify JAR contents
+          echo "=== JAR Contents Preview ==="
+          unzip -l "$INSTALLED_JAR" | grep "me/bechberger/collector/xml" | head -10 || echo "WARNING: No xml package found in JAR"
 
       - name: Build website generator and generate site
         run: |
