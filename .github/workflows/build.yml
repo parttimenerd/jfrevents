@@ -528,8 +528,9 @@ jobs:
           
           echo "Found jfreventcollection JAR: $COLLECTION_JAR"
           
-          # Extract version from filename (e.g., jfreventcollection-0.7-SNAPSHOT.jar -> 0.7-SNAPSHOT)
-          VERSION=$(basename "$COLLECTION_JAR" | sed 's/jfreventcollection-//' | sed 's/.jar$//')
+          # The website expects version 0.6-SNAPSHOT (see website/pom.xml)
+          # We install with this specific version regardless of the JAR filename
+          VERSION="0.6-SNAPSHOT"
           
           echo "Installing jfreventcollection:$VERSION to local Maven repository..."
           
