@@ -1,4 +1,4 @@
-# Workflow version: 2.3.0
+# Workflow version: 2.4.0
 # Last updated: 2025-12-29
 name: Build and Deploy
 
@@ -407,11 +407,17 @@ jobs:
         id: extract-version
         run: |
           set -euo pipefail
-          VERSION=$(python3 -c "import sys; sys.path.insert(0, 'bin'); exec(open('bin/releaser.py').read()); print(VERSION)")-SNAPSHOT
-          if [ -z "$VERSION" ] || [ "$VERSION" == "-SNAPSHOT" ]; then
-            echo "ERROR: Failed to extract version"
+          # Extract VERSION from releaser.py using grep (safer than exec)
+          VERSION=$(grep '^VERSION = ' bin/releaser.py | cut -d'"' -f2)
+          
+          if [ -z "$VERSION" ]; then
+            echo "ERROR: Failed to extract VERSION from bin/releaser.py"
+            echo "Expected to find: VERSION = \"x.y\""
             exit 1
           fi
+          
+          VERSION="${VERSION}-SNAPSHOT"
+          echo "Extracted version: $VERSION"
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
       - name: Validate build artifacts
