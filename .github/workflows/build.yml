@@ -1,0 +1,615 @@
+# Workflow version: 2.2.0
+# Last updated: 2025-12-29
+name: Build and Deploy
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  schedule:
+    - cron: '0 0 * * 0'  # Run every Sunday at midnight UTC
+  workflow_dispatch:
+    inputs:
+      cache_mode:
+        description: 'Cache strategy (normal/rebuild-jfr/rebuild-all)'
+        required: false
+        default: 'normal'
+        type: choice
+        options:
+          - normal
+          - rebuild-jfr
+          - rebuild-all
+
+# Default permissions - most restrictive, override per job
+permissions:
+  contents: read
+
+concurrency:
+  group: build-and-deploy
+  cancel-in-progress: true
+
+env:
+  JAVA_VERSION: '21'
+  PYTHON_VERSION: '3.11'
+  ARTIFACT_RETENTION_DAYS: 90
+  LOG_RETENTION_DAYS: 30
+  TEMP_ARTIFACT_RETENTION_DAYS: 1
+  MIN_DISK_SPACE_KB: 10000000
+  MIN_JFR_FILE_SIZE_BYTES: 1000
+
+jobs:
+  changes:
+    name: Detect Changes
+    runs-on: ubuntu-latest
+    outputs:
+      collector: ${{ steps.set-outputs.outputs.collector || steps.filter.outputs.collector }}
+      website: ${{ steps.set-outputs.outputs.website || steps.filter.outputs.website }}
+      cache-mode: ${{ steps.cache-mode.outputs.mode }}
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Validate cache mode
+        id: cache-mode
+        run: |
+          set -euo pipefail
+          CACHE_MODE="${{ github.event.inputs.cache_mode }}"
+          if [ -z "$CACHE_MODE" ]; then
+            CACHE_MODE="normal"
+          fi
+          
+          case "$CACHE_MODE" in
+            normal|rebuild-jfr|rebuild-all)
+              echo "mode=$CACHE_MODE" >> $GITHUB_OUTPUT
+              echo "Cache mode: $CACHE_MODE"
+              ;;
+            *)
+              echo "ERROR: Invalid cache mode: $CACHE_MODE"
+              exit 1
+              ;;
+          esac
+
+      - name: Detect changed paths
+        uses: dorny/paths-filter@v3
+        id: filter
+        if: github.event_name == 'push' || github.event_name == 'pull_request'
+        with:
+          filters: |
+            collector:
+              - 'src/**'
+              - 'bin/**'
+              - 'pom.xml'
+              - 'pom_loader.xml'
+              - '.github/workflows/**'
+              - 'samples/**'
+            website:
+              - 'website/**'
+
+      - name: Set outputs for scheduled/manual runs
+        id: set-outputs
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        run: |
+          echo "collector=true" >> $GITHUB_OUTPUT
+          echo "website=true" >> $GITHUB_OUTPUT
+
+  prepare-jfr:
+    name: Prepare JFR Creation
+    needs: changes
+    if: needs.changes.outputs.collector == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      gc-matrix: ${{ steps.gc-matrix.outputs.matrix }}
+      gc-count: ${{ steps.gc-matrix.outputs.count }}
+      cache-mode: ${{ needs.changes.outputs.cache-mode }}
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'sapmachine'
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Validate prerequisites
+        run: |
+          set -euo pipefail
+          
+          # Check Java version
+          JAVA_VER=$(java -version 2>&1 | head -n 1 | awk -F '"' '{print $2}' | cut -d'.' -f1)
+          if [ "$JAVA_VER" -lt 21 ]; then
+            echo "ERROR: Java version $JAVA_VER is too old (need >= 21)"
+            exit 1
+          fi
+          
+          # Check Python version
+          PYTHON_VER=$(python3 --version | awk '{print $2}' | cut -d'.' -f1)
+          if [ "$PYTHON_VER" -lt 3 ]; then
+            echo "ERROR: Python version $PYTHON_VER is too old (need >= 3)"
+            exit 1
+          fi
+          
+          # Check releaser.py exists
+          if [ ! -f "bin/releaser.py" ]; then
+            echo "ERROR: bin/releaser.py not found"
+            exit 1
+          fi
+          chmod +x bin/releaser.py
+
+      - name: Cache JFC and Renaissance JAR
+        uses: actions/cache@v4
+        id: jfc-cache
+        with:
+          path: |
+            .cache/jfc.jfc
+            .cache/renaissance.jar
+          key: jfc-renaissance-${{ hashFiles('bin/releaser.py') }}
+
+      - name: Build JFC configuration
+        if: steps.jfc-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          bin/releaser.py build_jfc
+
+      - name: Get and validate GC options
+        id: gc-options
+        run: |
+          set -euo pipefail
+          GC_OPTIONS=$(bin/releaser.py list_gc_options)
+          
+          if [ -z "$GC_OPTIONS" ]; then
+            echo "ERROR: No GC options returned from list_gc_options"
+            exit 1
+          fi
+          
+          GC_COUNT=$(echo "$GC_OPTIONS" | wc -w | tr -d ' ')
+          if [ "$GC_COUNT" -eq 0 ]; then
+            echo "ERROR: GC options list is empty"
+            exit 1
+          fi
+          
+          echo "options=$GC_OPTIONS" >> $GITHUB_OUTPUT
+          echo "count=$GC_COUNT" >> $GITHUB_OUTPUT
+          echo "Found $GC_COUNT GC options: $GC_OPTIONS"
+
+      - name: Create GC matrix
+        id: gc-matrix
+        run: |
+          set -euo pipefail
+          GC_OPTIONS="${{ steps.gc-options.outputs.options }}"
+          JSON_ARRAY=$(echo "$GC_OPTIONS" | jq -R -c 'split(" ")')
+          echo "matrix=$JSON_ARRAY" >> $GITHUB_OUTPUT
+          echo "count=${{ steps.gc-options.outputs.count }}" >> $GITHUB_OUTPUT
+
+      - name: Upload JFC and Renaissance JAR
+        uses: actions/upload-artifact@v4
+        with:
+          name: jfc-config
+          path: |
+            .cache/jfc.jfc
+            .cache/renaissance.jar
+          retention-days: ${{ env.TEMP_ARTIFACT_RETENTION_DAYS }}
+
+  create-jfr:
+    name: Create JFR (${{ matrix.gc }})
+    needs: [changes, prepare-jfr]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      matrix:
+        gc: ${{ fromJSON(needs.prepare-jfr.outputs.gc-matrix) }}
+      fail-fast: false
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'sapmachine'
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - name: Get cache key info
+        id: cache-info
+        run: |
+          set -euo pipefail
+          JAVA_VER=$(java -version 2>&1 | head -n 1 | awk -F '"' '{print $2}')
+          CURRENT_MONTH=$(date +%Y-%m)
+          echo "java-version=$JAVA_VER" >> $GITHUB_OUTPUT
+          echo "month=$CURRENT_MONTH" >> $GITHUB_OUTPUT
+
+      - name: Restore cached JFR for ${{ matrix.gc }}
+        id: jfr-cache
+        if: needs.changes.outputs.cache-mode == 'normal'
+        uses: actions/cache@v4
+        with:
+          path: jfr/sample_${{ matrix.gc }}.jfr
+          key: jfr-${{ matrix.gc }}-${{ steps.cache-info.outputs.month }}-java${{ steps.cache-info.outputs.java-version }}
+
+      - name: Download JFC configuration
+        if: steps.jfr-cache.outputs.cache-hit != 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: jfc-config
+          path: .cache/
+
+      - name: Create JFR for ${{ matrix.gc }}
+        if: steps.jfr-cache.outputs.cache-hit != 'true'
+        env:
+          GC: ${{ matrix.gc }}
+        run: |
+          set -euo pipefail
+          chmod +x bin/releaser.py
+          bin/releaser.py create_jfr 2>&1 | tee "create_jfr_${{ matrix.gc }}.log"
+
+      - name: Upload JFR creation log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jfr-creation-log-${{ matrix.gc }}-${{ github.run_number }}
+          path: create_jfr_${{ matrix.gc }}.log
+          retention-days: ${{ env.LOG_RETENTION_DAYS }}
+          if-no-files-found: ignore
+
+      - name: Verify JFR file created
+        if: steps.jfr-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          JFR_FILE="jfr/sample_${{ matrix.gc }}.jfr"
+          if [ ! -f "$JFR_FILE" ]; then
+            echo "ERROR: JFR file not found: $JFR_FILE"
+            exit 1
+          fi
+          FILE_SIZE=$(wc -c < "$JFR_FILE")
+          if [ "$FILE_SIZE" -lt ${{ env.MIN_JFR_FILE_SIZE_BYTES }} ]; then
+            echo "ERROR: JFR file too small: $FILE_SIZE bytes"
+            exit 1
+          fi
+          echo "JFR file verified: $FILE_SIZE bytes"
+
+      - name: Upload JFR file
+        uses: actions/upload-artifact@v4
+        with:
+          name: jfr-${{ matrix.gc }}
+          path: jfr/sample_${{ matrix.gc }}.jfr
+          retention-days: ${{ env.TEMP_ARTIFACT_RETENTION_DAYS }}
+
+  build:
+    name: Build Collector
+    needs: [changes, prepare-jfr, create-jfr]
+    if: |
+      always() && 
+      needs.changes.outputs.collector == 'true' && 
+      needs.prepare-jfr.result == 'success' &&
+      (needs.create-jfr.result == 'success' || needs.create-jfr.result == 'skipped')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    outputs:
+      version: ${{ steps.extract-version.outputs.version }}
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Free up disk space if needed
+        run: |
+          set -euo pipefail
+          AVAILABLE=$(df / | tail -1 | awk '{print $4}')
+          echo "Available disk space: ${AVAILABLE}KB"
+          
+          if [ "$AVAILABLE" -lt ${{ env.MIN_DISK_SPACE_KB }} ]; then
+            echo "Low disk space detected, cleaning up..."
+            sudo rm -rf /usr/share/dotnet
+            sudo rm -rf /usr/local/lib/android
+            sudo rm -rf /opt/ghc
+            sudo rm -rf /opt/hostedtoolcache/CodeQL
+            sudo docker image prune --all --force
+            
+            NEW_AVAILABLE=$(df / | tail -1 | awk '{print $4}')
+            echo "Freed up $((NEW_AVAILABLE - AVAILABLE))KB"
+            
+            if [ "$NEW_AVAILABLE" -lt ${{ env.MIN_DISK_SPACE_KB }} ]; then
+              echo "ERROR: Still insufficient disk space after cleanup: ${NEW_AVAILABLE}KB"
+              exit 1
+            fi
+          else
+            echo "Sufficient disk space available, skipping cleanup"
+          fi
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'sapmachine'
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Get cache key info
+        id: cache-info
+        run: |
+          set -euo pipefail
+          CURRENT_MONTH=$(date +%Y-%m)
+          JAVA_VER=$(java -version 2>&1 | head -n 1 | awk -F '"' '{print $2}')
+          echo "month=$CURRENT_MONTH" >> $GITHUB_OUTPUT
+          echo "java-version=$JAVA_VER" >> $GITHUB_OUTPUT
+
+      - name: Restore .cache folder
+        if: needs.changes.outputs.cache-mode == 'normal'
+        uses: actions/cache@v4
+        with:
+          path: .cache
+          key: jfr-cache-${{ steps.cache-info.outputs.month }}-java${{ steps.cache-info.outputs.java-version }}
+
+      - name: Cache Maven dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2/repository
+          key: maven-${{ runner.os }}-${{ hashFiles('pom.xml', 'pom_loader.xml') }}-v5
+          restore-keys: |
+            maven-${{ runner.os }}-
+
+      - name: Clean local artifacts from cache
+        run: |
+          set -euo pipefail
+          rm -rf ~/.m2/repository/me/bechberger/ || true
+
+      - name: Download JFR files from parallel jobs
+        uses: actions/download-artifact@v4
+        with:
+          pattern: jfr-*
+          path: jfr-artifacts/
+          merge-multiple: false
+
+      - name: Consolidate and validate JFR files
+        run: |
+          set -euo pipefail
+          mkdir -p jfr
+          find jfr-artifacts -name "*.jfr" -exec mv {} jfr/ \;
+          
+          EXPECTED_COUNT="${{ needs.prepare-jfr.outputs.gc-count }}"
+          ACTUAL_COUNT=$(ls -1 jfr/*.jfr 2>/dev/null | wc -l | tr -d ' ')
+          
+          if [ "$ACTUAL_COUNT" -ne "$EXPECTED_COUNT" ]; then
+            echo "ERROR: Expected $EXPECTED_COUNT JFR files but found $ACTUAL_COUNT"
+            ls -lh jfr/ || echo "No files"
+            exit 1
+          fi
+
+      - name: Download JDK sources
+        timeout-minutes: 20
+        uses: nick-fields/retry@7152eba30c6575329ac0576536151aca5a72e830
+        with:
+          timeout_minutes: 15
+          max_attempts: 3
+          retry_wait_seconds: 30
+          command: |
+            set -euo pipefail
+            chmod +x bin/releaser.py
+            bin/releaser.py download 2>&1 | tee download.log
+
+      - name: Build artifacts
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          chmod +x bin/releaser.py
+          bin/releaser.py build_parser 2>&1 | tee build_parser.log
+          bin/releaser.py build_versions 2>&1 | tee build_versions.log
+          bin/releaser.py build 2>&1 | tee build.log
+
+      - name: Run tests
+        run: mvn test
+
+      - name: Publish test results
+        if: always()
+        uses: EnricoMi/publish-unit-test-result-action@v2
+        with:
+          files: '**/target/surefire-reports/*.xml'
+          check_name: 'Test Results'
+          comment_mode: off
+
+      - name: Install to local Maven repo
+        run: |
+          set -euo pipefail
+          mvn install -DskipTests -q
+
+      - name: Extract version
+        id: extract-version
+        run: |
+          set -euo pipefail
+          VERSION=$(python3 -c "import sys; sys.path.insert(0, 'bin'); exec(open('bin/releaser.py').read()); print(VERSION)")-SNAPSHOT
+          if [ -z "$VERSION" ] || [ "$VERSION" == "-SNAPSHOT" ]; then
+            echo "ERROR: Failed to extract version"
+            exit 1
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Upload build logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs-${{ github.run_number }}
+          path: |
+            download.log
+            build_parser.log
+            build_versions.log
+            build.log
+          retention-days: ${{ env.LOG_RETENTION_DAYS }}
+          if-no-files-found: ignore
+
+      - name: Validate build artifacts
+        run: |
+          set -euo pipefail
+          echo "Validating JAR files..."
+          FOUND_JAR=false
+          
+          for jar in target/*.jar; do
+            if [ ! -f "$jar" ]; then
+              continue
+            fi
+            
+            FOUND_JAR=true
+            SIZE=$(wc -c < "$jar")
+            
+            if [ "$SIZE" -lt 100000 ]; then
+              echo "ERROR: $jar is suspiciously small ($SIZE bytes)"
+              exit 1
+            fi
+            
+            # Basic ZIP validation
+            if ! unzip -t "$jar" >/dev/null 2>&1; then
+              echo "ERROR: $jar is corrupted (not a valid ZIP)"
+              exit 1
+            fi
+            
+            echo "✓ $jar validated ($SIZE bytes)"
+          done
+          
+          if [ "$FOUND_JAR" = false ]; then
+            echo "ERROR: No JAR files found in target/"
+            exit 1
+          fi
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: jfr-artifacts-${{ steps.extract-version.outputs.version }}
+          path: |
+            target/*.jar
+            target/*.xml
+          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
+
+      - name: Upload Maven artifacts for website
+        uses: actions/upload-artifact@v4
+        with:
+          name: maven-local-repo
+          path: |
+            ~/.m2/repository/me/bechberger/jfreventcollection/*/jfreventcollection-*.jar
+            ~/.m2/repository/me/bechberger/jfreventcollection/*/jfreventcollection-*.pom
+            ~/.m2/repository/me/bechberger/jfreventcollector/*/jfreventcollector-*.jar
+            ~/.m2/repository/me/bechberger/jfreventcollector/*/jfreventcollector-*.pom
+          retention-days: ${{ env.TEMP_ARTIFACT_RETENTION_DAYS }}
+
+  deploy-website:
+    name: Deploy Website
+    needs: [changes, build]
+    if: |
+      always() && 
+      needs.changes.outputs.website == 'true' &&
+      needs.build.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Free up disk space if needed
+        run: |
+          AVAILABLE=$(df / | tail -1 | awk '{print $4}')
+          echo "Available disk space: ${AVAILABLE}KB"
+          
+          if [ "$AVAILABLE" -lt ${{ env.MIN_DISK_SPACE_KB }} ]; then
+            echo "Low disk space detected, cleaning up..."
+            sudo rm -rf /usr/share/dotnet
+            sudo docker image prune --all --force
+            
+            NEW_AVAILABLE=$(df / | tail -1 | awk '{print $4}')
+            echo "Freed up $((NEW_AVAILABLE - AVAILABLE))KB"
+          else
+            echo "Sufficient disk space available, skipping cleanup"
+          fi
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: 'sapmachine'
+
+      - name: Cache Maven dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2/repository
+          key: maven-website-${{ runner.os }}-${{ hashFiles('website/pom.xml') }}-v5
+          restore-keys: |
+            maven-website-${{ runner.os }}-
+
+      - name: Download Maven artifacts from build
+        uses: actions/download-artifact@v4
+        with:
+          name: maven-local-repo
+          path: ~/.m2/repository/
+
+      - name: Build website generator and generate site
+        run: |
+          set -euo pipefail
+          cd website
+          mvn clean package
+          java -jar target/jfrevents-site-generator.jar generate site --hide-missing-descriptions
+
+      - name: Set up Pages
+        uses: actions/configure-pages@v4
+
+      - name: Upload pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: 'website/site'
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+  summary:
+    name: Summary
+    needs: [changes, build, deploy-website]
+    runs-on: ubuntu-latest
+    if: always()
+    permissions: {}
+
+    steps:
+      - name: Create workflow summary
+        run: |
+          echo "# Build and Deploy Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Configuration" >> $GITHUB_STEP_SUMMARY
+          echo "- Trigger: ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Cache Mode: ${{ needs.changes.outputs.cache-mode }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Version: \`${{ needs.build.outputs.version || 'N/A' }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## What Changed" >> $GITHUB_STEP_SUMMARY
+          echo "- Collector: ${{ needs.changes.outputs.collector }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Website: ${{ needs.changes.outputs.website }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Job Status" >> $GITHUB_STEP_SUMMARY
+          echo "- Build: ${{ needs.build.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Website Deploy: ${{ needs.deploy-website.result }}" >> $GITHUB_STEP_SUMMARY
+
+      - name: Check for failures in scheduled run
+        if: github.event_name == 'schedule'
+        run: |
+          if [ "${{ needs.build.result }}" == "failure" ] || [ "${{ needs.deploy-website.result }}" == "failure" ]; then
+            echo "WARNING: Scheduled build failed"
+            echo "Build result: ${{ needs.build.result }}"
+            echo "Website result: ${{ needs.deploy-website.result }}"
+            exit 1
+          fi
