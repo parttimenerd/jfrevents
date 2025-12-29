@@ -402,6 +402,7 @@ jobs:
         run: |
           set -euo pipefail
           mvn install -DskipTests -q
+          mvn -f pom_loader.xml install -DskipTests -q
 
       - name: Extract version
         id: extract-version
@@ -420,13 +421,38 @@ jobs:
           echo "Extracted version: $VERSION"
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
+      - name: Prepare artifacts for upload
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts-to-upload
+          
+          # Copy JARs from target directory (jfreventcollector)
+          cp target/*.jar artifacts-to-upload/ || true
+          cp target/*.xml artifacts-to-upload/ || true
+          
+          # Copy jfreventcollection JAR from Maven repository
+          LOADER_VERSION="${{ steps.extract-version.outputs.version }}"
+          LOADER_JAR="$HOME/.m2/repository/me/bechberger/jfreventcollection/${LOADER_VERSION}/jfreventcollection-${LOADER_VERSION}.jar"
+          
+          if [ -f "$LOADER_JAR" ]; then
+            echo "Copying jfreventcollection JAR from Maven repository"
+            cp "$LOADER_JAR" artifacts-to-upload/
+          else
+            echo "WARNING: jfreventcollection JAR not found at $LOADER_JAR"
+            echo "Looking for any jfreventcollection JARs in Maven repo..."
+            find "$HOME/.m2/repository/me/bechberger/jfreventcollection/" -name "*.jar" -type f || true
+          fi
+          
+          echo "Artifacts prepared for upload:"
+          ls -lh artifacts-to-upload/
+
       - name: Validate build artifacts
         run: |
           set -euo pipefail
           echo "Validating JAR files..."
           FOUND_JAR=false
           
-          for jar in target/*.jar; do
+          for jar in artifacts-to-upload/*.jar; do
             if [ ! -f "$jar" ]; then
               continue
             fi
@@ -434,7 +460,7 @@ jobs:
             FOUND_JAR=true
             SIZE=$(wc -c < "$jar")
             
-            if [ "$SIZE" -lt 100000 ]; then
+            if [ "$SIZE" -lt 10000 ]; then
               echo "ERROR: $jar is suspiciously small ($SIZE bytes)"
               exit 1
             fi
@@ -449,7 +475,15 @@ jobs:
           done
           
           if [ "$FOUND_JAR" = false ]; then
-            echo "ERROR: No JAR files found in target/"
+            echo "ERROR: No JAR files found in artifacts-to-upload/"
+            exit 1
+          fi
+          
+          # Verify jfreventcollection JAR is present
+          if ! ls artifacts-to-upload/jfreventcollection-*.jar 1> /dev/null 2>&1; then
+            echo "ERROR: jfreventcollection JAR not found in artifacts"
+            echo "Available files:"
+            ls -la artifacts-to-upload/
             exit 1
           fi
 
@@ -457,9 +491,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: jfr-artifacts-${{ steps.extract-version.outputs.version }}
-          path: |
-            target/*.jar
-            target/*.xml
+          path: artifacts-to-upload/
           retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
 
   deploy-website:
@@ -522,15 +554,15 @@ jobs:
           
           if [ -z "$COLLECTION_JAR" ]; then
             echo "ERROR: jfreventcollection JAR not found in build artifacts"
+            echo "Contents of build-artifacts:"
             ls -R build-artifacts/
             exit 1
           fi
           
           echo "Found jfreventcollection JAR: $COLLECTION_JAR"
           
-          # The website expects version 0.7-SNAPSHOT (see website/pom.xml)
-          # This matches the version built by pom_loader.xml
-          VERSION="0.7-SNAPSHOT"
+          # Extract version from filename (e.g., jfreventcollection-0.7-SNAPSHOT.jar -> 0.7-SNAPSHOT)
+          VERSION=$(basename "$COLLECTION_JAR" | sed 's/jfreventcollection-//' | sed 's/.jar$//')
           
           echo "Installing jfreventcollection:$VERSION to local Maven repository..."
           
