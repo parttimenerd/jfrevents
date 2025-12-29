@@ -528,9 +528,9 @@ jobs:
           
           echo "Found jfreventcollection JAR: $COLLECTION_JAR"
           
-          # The website expects version 0.6-SNAPSHOT (see website/pom.xml)
-          # We install with this specific version regardless of the JAR filename
-          VERSION="0.6-SNAPSHOT"
+          # The website expects version 0.7-SNAPSHOT (see website/pom.xml)
+          # This matches the version built by pom_loader.xml
+          VERSION="0.7-SNAPSHOT"
           
           echo "Installing jfreventcollection:$VERSION to local Maven repository..."
           
