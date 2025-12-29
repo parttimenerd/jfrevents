@@ -357,6 +357,30 @@ def download(force: bool = False):
     download_benchmarks()
 
 
+def list_jdk_versions() -> str:
+    """ List all JDK versions as a space-separated string for CI matrix """
+    repos = get_repos()
+    return " ".join(str(repo.version) for repo in repos)
+
+
+def download_jdk_version(version: int):
+    """ Download JDK sources for a specific version """
+    repos = get_repos()
+    repo = [r for r in repos if r.version == version]
+    if not repo:
+        print(f"ERROR: JDK version {version} not found")
+        sys.exit(1)
+
+    repo = repo[0]
+    print(f"Downloading JDK {version}...")
+    download_latest_release(repo)
+
+    graal = get_graal_version(repo.version)
+    if graal:
+        print(f"Downloading Graal for JDK {version}...")
+        download_graal_version(graal)
+
+
 def build_parser():
     execute("mvn clean package assembly:single")
 
@@ -700,16 +724,20 @@ class CLIArgs:
 
 
 def parse_cli_args() -> CLIArgs:
-    available_commands = ["versions", "download_urls", "download",
+    available_commands = ["versions", "download_urls", "download", "list_jdk_versions", "download_jdk_version",
                           "build_parser", "list_gc_options", "build_jfc", "create_jfr", "build_versions",
                           "build", "deploy_mvn", "deploy_gh", "deploy",
                           "deploy_release", "clear", "all", "tags"]
     forcable_commands = ["all", "create_jfr", "build_versions"]
     commands = []
     forced_commands = []
+    jdk_version_arg = None
+
     for i, arg in enumerate(sys.argv[1:]):
         if arg == "--force":
             forced_commands = forcable_commands
+        elif arg.startswith("--jdk-version="):
+            jdk_version_arg = int(arg.split("=")[1])
         else:
             cmd, *args = arg.split("=")
             if cmd not in available_commands:
@@ -734,11 +762,11 @@ def parse_cli_args() -> CLIArgs:
                 sys.exit(1)
     if not commands:
         print(HELP)
-    return CLIArgs(commands, forced_commands)
+    return CLIArgs(commands, forced_commands), jdk_version_arg
 
 
 def cli():
-    args = parse_cli_args()
+    args, jdk_version_arg = parse_cli_args()
     commands = args.commands
     forced = args.forced_commands
 
@@ -751,6 +779,8 @@ def cli():
                 r in get_repos())),
         "download_urls": download_urls,
         "download": download,
+        "list_jdk_versions": lambda: print(list_jdk_versions()),
+        "download_jdk_version": lambda: download_jdk_version(jdk_version_arg if jdk_version_arg else int(os.getenv("JDK_VERSION", "0"))),
         "build_parser": build_parser,
         "list_gc_options": lambda: print(" ".join(list_gc_options())),
         "build_jfc": build_jfc,

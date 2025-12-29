@@ -353,6 +353,9 @@ jobs:
         with:
           path: .cache
           key: jfr-cache-${{ steps.cache-info.outputs.month }}-java${{ steps.cache-info.outputs.java-version }}
+          restore-keys: |
+            jfr-cache-${{ steps.cache-info.outputs.month }}-
+            jfr-cache-
 
       - name: Cache Maven dependencies
         uses: actions/cache@v4
@@ -390,16 +393,11 @@ jobs:
           fi
 
       - name: Download JDK sources
-        timeout-minutes: 20
-        uses: nick-fields/retry@v3
-        with:
-          timeout_minutes: 15
-          max_attempts: 3
-          retry_wait_seconds: 30
-          command: |
-            set -euo pipefail
-            chmod +x bin/releaser.py
-            bin/releaser.py download 2>&1 | tee download.log
+        timeout-minutes: 60
+        run: |
+          set -euo pipefail
+          chmod +x bin/releaser.py
+          bin/releaser.py download 2>&1 | tee download.log
 
       - name: Build artifacts
         timeout-minutes: 30
