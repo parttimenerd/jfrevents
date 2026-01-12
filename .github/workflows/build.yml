@@ -558,8 +558,7 @@ jobs:
     needs: [changes, build]
     if: |
       always() &&
-      needs.changes.outputs.website == 'true' &&
-      (needs.build.result == 'success' || needs.build.result == 'skipped')
+      (needs.build.result == 'success' || (needs.changes.outputs.website == 'true' && needs.build.result == 'skipped'))
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
