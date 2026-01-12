@@ -1,4 +1,4 @@
-[![REUSE status](https://api.reuse.software/badge/github.com/SAP/jfrevents)](https://api.reuse.software/info/github.com/SAP/jfrevents)
+[![REUSE status](https://api.reuse.software/badge/github.com/SAP/jfrevents)](https://api.reuse.software/info/github.com/SAP/jfrevents) [![Build and Deploy](https://github.com/SAP/jfrevents/actions/workflows/build.yml/badge.svg)](https://github.com/SAP/jfrevents/actions/workflows/build.yml)
 
 JFR Event Collector
 =====================
