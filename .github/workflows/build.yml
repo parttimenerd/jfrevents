@@ -22,6 +22,15 @@ on:
           - normal
           - rebuild-jfr
           - rebuild-all
+      rebuild_target:
+        description: 'What to rebuild (all/website-only/collector-only)'
+        required: false
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - website-only
+          - collector-only
 
 # Default permissions - most restrictive, override per job
 permissions:
@@ -91,8 +100,35 @@ jobs:
         id: set-outputs
         if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         run: |
-          echo "collector=true" >> $GITHUB_OUTPUT
-          echo "website=true" >> $GITHUB_OUTPUT
+          set -euo pipefail
+          
+          REBUILD_TARGET="${{ github.event.inputs.rebuild_target }}"
+          
+          # Default to 'all' for scheduled runs or if not specified
+          if [ -z "$REBUILD_TARGET" ]; then
+            REBUILD_TARGET="all"
+          fi
+          
+          echo "Rebuild target: $REBUILD_TARGET"
+          
+          case "$REBUILD_TARGET" in
+            all)
+              echo "collector=true" >> $GITHUB_OUTPUT
+              echo "website=true" >> $GITHUB_OUTPUT
+              ;;
+            website-only)
+              echo "collector=false" >> $GITHUB_OUTPUT
+              echo "website=true" >> $GITHUB_OUTPUT
+              ;;
+            collector-only)
+              echo "collector=true" >> $GITHUB_OUTPUT
+              echo "website=false" >> $GITHUB_OUTPUT
+              ;;
+            *)
+              echo "ERROR: Invalid rebuild target: $REBUILD_TARGET"
+              exit 1
+              ;;
+          esac
 
   prepare-jfr:
     name: Prepare JFR Creation
@@ -522,7 +558,8 @@ jobs:
     needs: [changes, build]
     if: |
       always() &&
-      needs.build.result == 'success'
+      needs.changes.outputs.website == 'true' &&
+      (needs.build.result == 'success' || needs.build.result == 'skipped')
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
@@ -563,6 +600,7 @@ jobs:
             maven-website-${{ runner.os }}-
 
       - name: Download jfreventcollection artifacts from build
+        if: needs.build.result == 'success'
         uses: actions/download-artifact@v4
         with:
           name: jfr-artifacts-${{ needs.build.outputs.version }}
@@ -572,60 +610,68 @@ jobs:
         run: |
           set -euo pipefail
           
-          echo "=== Debugging: Listing all downloaded artifacts ==="
-          ls -laR build-artifacts/
-          
-          # Find the jfreventcollection JAR (exclude sources/javadoc)
-          COLLECTION_JAR=$(find build-artifacts -name "jfreventcollection-*.jar" -type f ! -name "*-sources.jar" ! -name "*-javadoc.jar" | head -1)
-          
-          if [ -z "$COLLECTION_JAR" ]; then
-            echo "ERROR: jfreventcollection JAR not found in build artifacts"
-            echo "Contents of build-artifacts:"
-            ls -R build-artifacts/
-            exit 1
+          # Check if we have build artifacts (from fresh build) or need to use existing dependency
+          if [ -d "build-artifacts" ] && [ "$(ls -A build-artifacts 2>/dev/null)" ]; then
+            echo "=== Using freshly built artifacts ==="
+            echo "=== Debugging: Listing all downloaded artifacts ==="
+            ls -laR build-artifacts/
+            
+            # Find the jfreventcollection JAR (exclude sources/javadoc)
+            COLLECTION_JAR=$(find build-artifacts -name "jfreventcollection-*.jar" -type f ! -name "*-sources.jar" ! -name "*-javadoc.jar" | head -1)
+            
+            if [ -z "$COLLECTION_JAR" ]; then
+              echo "ERROR: jfreventcollection JAR not found in build artifacts"
+              echo "Contents of build-artifacts:"
+              ls -R build-artifacts/
+              exit 1
+            fi
+            
+            echo "Found jfreventcollection JAR: $COLLECTION_JAR"
+            
+            # Validate the JAR file
+            JAR_SIZE=$(wc -c < "$COLLECTION_JAR")
+            echo "JAR size: $JAR_SIZE bytes"
+            
+            if [ "$JAR_SIZE" -lt 10000 ]; then
+              echo "ERROR: JAR file is too small ($JAR_SIZE bytes)"
+              exit 1
+            fi
+            
+            # Extract version from filename (e.g., jfreventcollection-0.7-SNAPSHOT.jar -> 0.7-SNAPSHOT)
+            VERSION=$(basename "$COLLECTION_JAR" | sed 's/jfreventcollection-//' | sed 's/.jar$//')
+            
+            echo "Installing jfreventcollection:$VERSION to local Maven repository..."
+            
+            # Install to local Maven repo with verbose output
+            mvn install:install-file \
+              -Dfile="$COLLECTION_JAR" \
+              -DgroupId=me.bechberger \
+              -DartifactId=jfreventcollection \
+              -Dversion="$VERSION" \
+              -Dpackaging=jar \
+              -DgeneratePom=true
+            
+            # Verify installation
+            INSTALLED_JAR="$HOME/.m2/repository/me/bechberger/jfreventcollection/${VERSION}/jfreventcollection-${VERSION}.jar"
+            
+            if [ ! -f "$INSTALLED_JAR" ]; then
+              echo "ERROR: JAR was not installed to expected location: $INSTALLED_JAR"
+              echo "Checking Maven repository:"
+              find "$HOME/.m2/repository/me/bechberger/" -name "*.jar" -type f || echo "No JARs found"
+              exit 1
+            fi
+            
+            echo "✓ jfreventcollection:$VERSION installed successfully"
+            echo "✓ Verified at: $INSTALLED_JAR"
+            
+            # Verify JAR contents
+            echo "=== JAR Contents Preview ==="
+            unzip -l "$INSTALLED_JAR" | grep "me/bechberger/collector/xml" | head -10 || echo "WARNING: No xml package found in JAR"
+          else
+            echo "=== Website-only rebuild: Using dependency from pom.xml ==="
+            echo "No build artifacts found. Maven will resolve jfreventcollection from configured repositories."
+            echo "This is expected for website-only rebuilds."
           fi
-          
-          echo "Found jfreventcollection JAR: $COLLECTION_JAR"
-          
-          # Validate the JAR file
-          JAR_SIZE=$(wc -c < "$COLLECTION_JAR")
-          echo "JAR size: $JAR_SIZE bytes"
-          
-          if [ "$JAR_SIZE" -lt 10000 ]; then
-            echo "ERROR: JAR file is too small ($JAR_SIZE bytes)"
-            exit 1
-          fi
-          
-          # Extract version from filename (e.g., jfreventcollection-0.7-SNAPSHOT.jar -> 0.7-SNAPSHOT)
-          VERSION=$(basename "$COLLECTION_JAR" | sed 's/jfreventcollection-//' | sed 's/.jar$//')
-          
-          echo "Installing jfreventcollection:$VERSION to local Maven repository..."
-          
-          # Install to local Maven repo with verbose output
-          mvn install:install-file \
-            -Dfile="$COLLECTION_JAR" \
-            -DgroupId=me.bechberger \
-            -DartifactId=jfreventcollection \
-            -Dversion="$VERSION" \
-            -Dpackaging=jar \
-            -DgeneratePom=true
-          
-          # Verify installation
-          INSTALLED_JAR="$HOME/.m2/repository/me/bechberger/jfreventcollection/${VERSION}/jfreventcollection-${VERSION}.jar"
-          
-          if [ ! -f "$INSTALLED_JAR" ]; then
-            echo "ERROR: JAR was not installed to expected location: $INSTALLED_JAR"
-            echo "Checking Maven repository:"
-            find "$HOME/.m2/repository/me/bechberger/" -name "*.jar" -type f || echo "No JARs found"
-            exit 1
-          fi
-          
-          echo "✓ jfreventcollection:$VERSION installed successfully"
-          echo "✓ Verified at: $INSTALLED_JAR"
-          
-          # Verify JAR contents
-          echo "=== JAR Contents Preview ==="
-          unzip -l "$INSTALLED_JAR" | grep "me/bechberger/collector/xml" | head -10 || echo "WARNING: No xml package found in JAR"
 
       - name: Build website generator and generate site
         run: |
