@@ -622,10 +622,10 @@ def build():
         f.write("\n".join(
             f"{repo.version}: {get_latest_release_name_and_zip_url(repo).name}"
             for repo in get_repos()))
-    print("Build loader package")
-    execute(f"mvn -f pom_loader.xml package assembly:single")
     with open(RESOURCES_FOLDER + "/time", "w") as f:
         f.write(str(int(time.time())))
+    print("Build loader package")
+    execute(f"mvn -f pom_loader.xml package assembly:single")
 
 
 def clear_harness_and_launchers():
