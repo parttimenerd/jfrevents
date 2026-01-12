@@ -81,7 +81,7 @@
         <dependency>
             <groupId>me.bechberger</groupId>
             <artifactId>jfreventcollection</artifactId>
-            <version>0.7-SNAPSHOT</version>
+            <version>full</version>
         </dependency>
         <dependency>
             <groupId>com.github.spullara.mustache.java</groupId>
