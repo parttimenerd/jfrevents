@@ -211,30 +211,6 @@ by appending "=force" to them, e.g. "all=force".
 - Maven dependencies - Cached with version-specific keys
 - All caches automatically invalidate when Java version changes or monthly rotation occurs
 
-### GitHub Actions CI/CD
-
-The project uses GitHub Actions to automatically build and deploy snapshots to Maven Central:
-- On every push to `main`
-- Every Sunday at midnight UTC (scheduled)
-- Manually via workflow dispatch (with cache control options)
-
-**Manual Trigger Cache Modes:**
-
-When manually triggering the workflow, you can choose from these cache strategies:
-- **normal** (default) - Use all caches (`.cache` and `jfr` folders)
-- **rebuild-jfr** - Use `.cache` (JDK downloads) but force regenerate JFR benchmark files
-- **rebuild-all** - Rebuild everything from scratch (skip all caches)
-
-**Cache Management:**
-- `.cache` folder (downloaded JDK sources, etc.) - Cached monthly per Java version, automatically cleaned each month or when Java version changes
-- `jfr` folder (JFR benchmark files) - Cached monthly per Java version
-- JFR files are created **concurrently** in parallel jobs for faster builds (~10 minutes vs ~30 minutes sequential)
-- The `create_jfr` step only runs when:
-  - Starting a new month (cache expires)
-  - Java version changes (from `java -version` output)
-  - Cache is manually cleared or rebuild-jfr/rebuild-all mode is selected
-
-
 ## Publishing of the website
 
 The website is built using the [website generator](./website) and is updated
