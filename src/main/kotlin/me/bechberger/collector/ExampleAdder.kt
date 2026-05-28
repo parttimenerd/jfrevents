@@ -15,12 +15,12 @@ import kotlin.io.path.writeText
 /** Adds examples to the events and types */
 class ExampleAdder(val metadata: me.bechberger.collector.xml.Metadata) {
 
-    fun addEventsFromFile(label: String, description: String, file: Path) {
+    fun addEventsFromFile(label: String, description: String, file: Path, platform: String? = null) {
         assert(metadata.exampleFiles.none { it.label == label || it.description == description })
         val processor = Processor(file)
         processor.process()
         val id = metadata.exampleFiles.size
-        metadata.exampleFiles.add(me.bechberger.collector.xml.ExampleFile(label, description))
+        metadata.exampleFiles.add(me.bechberger.collector.xml.ExampleFile(label, description, platform))
         addEventExamples(id, processor)
     }
 
@@ -197,9 +197,20 @@ class ExampleAdder(val metadata: me.bechberger.collector.xml.Metadata) {
 }
 
 fun main(args: Array<String>) {
-    if (args.size < 4 || (args.size - 2) % 3 != 0) {
+    // Optional second argument: --platform=<value> applies to all examples in this call
+    val platform: String?
+    val startIdx: Int
+    if (args.size > 1 && args[1].startsWith("--platform=")) {
+        platform = args[1].removePrefix("--platform=")
+        startIdx = 2
+    } else {
+        platform = null
+        startIdx = 1
+    }
+    val tripletArgs = args.size - startIdx - 1  // subtract metadata path and output path
+    if (args.size < 4 || tripletArgs % 3 != 0) {
         println(
-            "Usage: ExampleAdder <path to metadata.xml> <label of file> <description of file> <JFR file> ... " + "<path to resulting metadata.xml>"
+            "Usage: ExampleAdder <path to metadata.xml> [--platform=<value>] <label of file> <description of file> <JFR file> ... " + "<path to resulting metadata.xml>"
         )
         return
     }
@@ -207,14 +218,14 @@ fun main(args: Array<String>) {
     val metadata = metadataPath.readXmlAs(me.bechberger.collector.xml.Metadata::class.java)
     println("Read metadata from $metadataPath: ${metadata.events.size} events, ${metadata.types.size} types")
     val eventAdder = ExampleAdder(metadata)
-    for (i in 1 until args.size step 3) {
+    for (i in startIdx until args.size step 3) {
         if (args.size - i < 3) {
             break
         }
         val label = args[i]
         val description = args[i + 1]
         val file = Paths.get(args[i + 2])
-        eventAdder.addEventsFromFile(label, description, file)
+        eventAdder.addEventsFromFile(label, description, file, platform)
     }
     val out = args[args.size - 1]
     if (out == "-") {

@@ -579,13 +579,86 @@ def add_examples(repo: Repo):
         gc = gc_option[3:]
         label = f"{platform}_{gc}"
         description = f"Run of renaissance benchmark with {gc} on Java {java_version().strip()} ({platform})"
+        jfr_file = jfr_file_name(gc_option, platform)
+        if not os.path.exists(jfr_file):
+            print(f"Skipping {label}: JFR file not found: {jfr_file}")
+            continue
         execute(
             f"java -cp {get_parser_or_build()} me.bechberger.collector.ExampleAdderKt {metadata_file} "
-            f"{label} \"{description}\" {jfr_file_name(gc_option, platform)} {metadata_file}")
+            f"--platform={platform} {label} \"{description}\" {jfr_file} {metadata_file}")
+
+
+GRAALVM_SAMPLE_APP_SRC = f"{CURRENT_DIR}/src/main/java/jfr_sample/Main.java"
+GRAALVM_SAMPLE_APP_OUT = f"{CURRENT_DIR}/.cache/jfr_sample_out"
+GRAALVM_SAMPLE_APP_JAR = f"{CURRENT_DIR}/.cache/jfr_sample_app.jar"
+GRAALVM_SAMPLE_APP_BIN = f"{CURRENT_DIR}/jfr_sample_app"
+
+
+def graalvm_jfr_file_name(mode: str, gc: str = "native") -> str:
+    p = get_platform()
+    suffix = gc if mode == "jvm" else "native"
+    return f"{JFR_FOLDER}/sample_{p}_graalvm_{suffix}.jfr"
+
+
+def create_jfr_graalvm_native():
+    """Compile the tiny JFR sample app to native image and run it with JFR enabled."""
+    if not os.path.exists(JFC_FILE):
+        create_jfc()
+    jfr_file = graalvm_jfr_file_name("native")
+    os.makedirs(GRAALVM_SAMPLE_APP_OUT, exist_ok=True)
+    execute(f"javac -d {GRAALVM_SAMPLE_APP_OUT} {GRAALVM_SAMPLE_APP_SRC}")
+    execute(f"jar -cfe {GRAALVM_SAMPLE_APP_JAR} jfr_sample.Main -C {GRAALVM_SAMPLE_APP_OUT} .")
+    execute(f"native-image --enable-monitoring=jfr -jar {GRAALVM_SAMPLE_APP_JAR} "
+            f"{GRAALVM_SAMPLE_APP_BIN}")
+    execute([GRAALVM_SAMPLE_APP_BIN,
+             f"-XX:StartFlightRecording=filename={jfr_file},settings={JFC_FILE},duration=18s"])
+
+
+def create_jfr_graal(force: bool = False):
+    """Create JFR samples using GraalVM. MODE env var selects 'jvm' (default) or 'native'."""
+    mode = os.getenv("MODE", "jvm")
+    if mode == "native":
+        create_jfr_graalvm_native()
+    else:
+        if not os.path.exists(JFC_FILE):
+            create_jfc()
+        if not os.path.exists(RENAISSANCE_JAR):
+            download_benchmarks()
+        gc_option = "UseG1GC"
+        jfr_file = graalvm_jfr_file_name("jvm", "G1GC")
+        if os.path.exists(jfr_file) and not force:
+            print(f"GraalVM JVM JFR file already exists: {jfr_file}")
+            return
+        execute(["java",
+                 f"-XX:StartFlightRecording=filename={jfr_file},settings={JFC_FILE}",
+                 "-XX:+" + gc_option, "-jar", RENAISSANCE_JAR, "-t", "5", "-r", "1", "all"])
+
+
+def add_graal_examples(repo: Repo):
+    """Add GraalVM JFR sample examples to the metadata."""
+    import glob as _glob
+    metadata_file = meta_file_name(repo)
+    graal_files = sorted(_glob.glob(f"{JFR_FOLDER}/sample_*_graalvm_*.jfr"))
+    if not graal_files:
+        print("No GraalVM JFR files found, skipping graal examples")
+        return
+    for f in graal_files:
+        base = os.path.basename(f)[len("sample_"):-len(".jfr")]  # e.g. linux_graalvm_G1GC
+        parts = base.split("_graalvm_")
+        plat, suffix = parts[0], parts[1]  # linux, G1GC or native
+        label = f"graalvm_{plat}_{suffix}"
+        if suffix == "native":
+            desc = f"GraalVM Native Image JFR recording ({plat})"
+            platform_tag = "graalvm-native"
+        else:
+            desc = f"GraalVM JVM with {suffix} on {plat}"
+            platform_tag = "graalvm"
+        execute(
+            f"java -cp {get_parser_or_build()} me.bechberger.collector.ExampleAdderKt "
+            f"{metadata_file} --platform={platform_tag} {label} \"{desc}\" {f} {metadata_file}")
 
 
 def add_additional_descriptions(repo: Repo):
-    metadata_file = meta_file_name(repo)
     log(f"Add additional descriptions for version {repo.version} via AI")
     execute(
         f"java -cp {get_parser_or_build()} me.bechberger.collector.AdditionalDescriptionAdderKt {metadata_file} "
@@ -651,6 +724,8 @@ def build_version(repo: Repo, force: bool = False):
     execute(f"cp {meta_file} {meta_wo_examples}")
     print(f"Add examples from JFR files for version {repo.version}")
     add_examples(repo)
+    print(f"Add GraalVM examples from JFR files for version {repo.version}")
+    add_graal_examples(repo)
     print(f"Add source code context for version {repo.version}")
     add_source_code_context(repo)
     add_ai_generated_descriptions(repo)
@@ -788,10 +863,11 @@ class CLIArgs:
 
 def parse_cli_args() -> CLIArgs:
     available_commands = ["versions", "download_urls", "download", "list_jdk_versions", "download_jdk_version",
-                          "build_parser", "list_gc_options", "build_jfc", "create_jfr", "build_versions",
+                          "build_parser", "list_gc_options", "build_jfc", "create_jfr", "create_jfr_graal",
+                          "build_versions",
                           "build", "deploy_mvn", "deploy_gh", "deploy",
                           "deploy_release", "clear", "all", "tags"]
-    forcable_commands = ["all", "create_jfr", "build_versions"]
+    forcable_commands = ["all", "create_jfr", "create_jfr_graal", "build_versions"]
     commands = []
     forced_commands = []
     jdk_version_arg = None
@@ -848,6 +924,7 @@ def cli():
         "list_gc_options": lambda: print(" ".join(list_gc_options())),
         "build_jfc": build_jfc,
         "create_jfr": create_jfr,
+        "create_jfr_graal": create_jfr_graal,
         "build_versions": build_versions,
         "build": build,
         "deploy_mvn": lambda: deploy_maven(snapshot=True),

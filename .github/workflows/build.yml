@@ -354,15 +354,87 @@ jobs:
           path: jfr/sample_${{ steps.cache-info.outputs.platform }}_${{ matrix.gc }}.jfr
           retention-days: ${{ env.TEMP_ARTIFACT_RETENTION_DAYS }}
 
+  create-jfr-graal:
+    name: Create JFR (GraalVM ${{ matrix.mode }})
+    needs: [changes, prepare-jfr]
+    if: needs.changes.outputs.collector == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        mode: [jvm, native]
+      fail-fast: false
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up GraalVM JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: graalvm
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - name: Get cache key info
+        id: cache-info
+        run: |
+          set -euo pipefail
+          JAVA_VER=$(java -version 2>&1 | head -n 1 | awk -F '"' '{print $2}')
+          CURRENT_MONTH=$(date +%Y-%m)
+          echo "java-version=$JAVA_VER" >> $GITHUB_OUTPUT
+          echo "month=$CURRENT_MONTH" >> $GITHUB_OUTPUT
+
+      - name: Restore cached GraalVM JFR
+        id: jfr-graal-cache
+        if: needs.changes.outputs.cache-mode == 'normal'
+        uses: actions/cache@v4
+        with:
+          path: jfr/sample_linux_graalvm_*.jfr
+          key: jfr-graalvm-${{ matrix.mode }}-${{ steps.cache-info.outputs.month }}-java${{ steps.cache-info.outputs.java-version }}
+
+      - name: Download JFC configuration
+        if: steps.jfr-graal-cache.outputs.cache-hit != 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: jfc-config
+          path: .cache/
+
+      - name: Create GraalVM JFR (${{ matrix.mode }})
+        if: steps.jfr-graal-cache.outputs.cache-hit != 'true'
+        env:
+          MODE: ${{ matrix.mode }}
+          PLATFORM: linux
+        run: |
+          set -euo pipefail
+          python3 bin/releaser.py create_jfr_graal 2>&1 | tee create_jfr_graal_${{ matrix.mode }}.log
+
+      - name: Upload JFR creation log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jfr-graal-creation-log-${{ matrix.mode }}-${{ github.run_number }}
+          path: create_jfr_graal_${{ matrix.mode }}.log
+          retention-days: ${{ env.LOG_RETENTION_DAYS }}
+          if-no-files-found: ignore
+
+      - name: Upload GraalVM JFR files
+        uses: actions/upload-artifact@v4
+        with:
+          name: jfr-graalvm-${{ matrix.mode }}
+          path: jfr/sample_linux_graalvm_*.jfr
+          if-no-files-found: ignore
+          retention-days: ${{ env.TEMP_ARTIFACT_RETENTION_DAYS }}
+
   build:
     name: Build Collector
-    needs: [changes, prepare-jfr, create-jfr, test]
+    needs: [changes, prepare-jfr, create-jfr, create-jfr-graal, test]
     if: |
       always() &&
       needs.changes.outputs.collector == 'true' &&
       needs.prepare-jfr.result == 'success' &&
       needs.test.result == 'success' &&
-      (needs.create-jfr.result == 'success' || needs.create-jfr.result == 'skipped')
+      (needs.create-jfr.result == 'success' || needs.create-jfr.result == 'skipped') &&
+      (needs.create-jfr-graal.result == 'success' || needs.create-jfr-graal.result == 'skipped')
     runs-on: ubuntu-latest
     timeout-minutes: 60
     outputs:
