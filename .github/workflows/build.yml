@@ -299,7 +299,9 @@ jobs:
         if: needs.changes.outputs.cache-mode == 'normal'
         uses: actions/cache@v4
         with:
-          path: jfr/sample_${{ steps.cache-info.outputs.platform }}_${{ matrix.gc }}.jfr
+          path: |
+            jfr/sample_${{ steps.cache-info.outputs.platform }}_${{ matrix.gc }}.jfr
+            jfr/sample_${{ steps.cache-info.outputs.platform }}_${{ matrix.gc }}_events.jfr
           key: jfr-${{ matrix.os }}-${{ matrix.gc }}-${{ steps.cache-info.outputs.month }}-java${{ steps.cache-info.outputs.java-version }}
 
       - name: Download JFC configuration
@@ -351,7 +353,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: jfr-${{ matrix.os }}-${{ matrix.gc }}
-          path: jfr/sample_${{ steps.cache-info.outputs.platform }}_${{ matrix.gc }}.jfr
+          path: |
+            jfr/sample_${{ steps.cache-info.outputs.platform }}_${{ matrix.gc }}.jfr
+            jfr/sample_${{ steps.cache-info.outputs.platform }}_${{ matrix.gc }}_events.jfr
           retention-days: ${{ env.TEMP_ARTIFACT_RETENTION_DAYS }}
 
   create-jfr-graal:

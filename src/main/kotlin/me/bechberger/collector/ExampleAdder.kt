@@ -16,12 +16,19 @@ import kotlin.io.path.writeText
 class ExampleAdder(val metadata: me.bechberger.collector.xml.Metadata) {
 
     fun addEventsFromFile(label: String, description: String, file: Path, platform: String? = null) {
+        addEventsFromFiles(label, description, listOf(file), platform)
+    }
+
+    fun addEventsFromFiles(label: String, description: String, files: List<Path>, platform: String? = null) {
         assert(metadata.exampleFiles.none { it.label == label || it.description == description })
-        val processor = Processor(file)
-        processor.process()
         val id = metadata.exampleFiles.size
         metadata.exampleFiles.add(me.bechberger.collector.xml.ExampleFile(label, description, platform))
-        addEventExamples(id, processor)
+        for (file in files) {
+            if (!file.toFile().exists()) continue
+            val processor = Processor(file)
+            processor.process()
+            addEventExamples(id, processor)
+        }
     }
 
     private fun addEventExamples(id: Int, processor: Processor) {
@@ -224,8 +231,9 @@ fun main(args: Array<String>) {
         }
         val label = args[i]
         val description = args[i + 1]
-        val file = Paths.get(args[i + 2])
-        eventAdder.addEventsFromFile(label, description, file, platform)
+        // Support multiple comma-separated JFR files for the same label
+        val files = args[i + 2].split(",").map { Paths.get(it.trim()) }
+        eventAdder.addEventsFromFiles(label, description, files, platform)
     }
     val out = args[args.size - 1]
     if (out == "-") {

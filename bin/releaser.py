@@ -439,6 +439,28 @@ def jfr_file_name(gc_options: str, platform: str = None) -> str:
     return f"{JFR_FOLDER}/sample_{p}_{gc_options}.jfr"
 
 
+def jfr_sample_app_file_name(gc_options: str, platform: str = None) -> str:
+    """JFR file produced by the sample app run alongside renaissance."""
+    p = platform or get_platform()
+    return f"{JFR_FOLDER}/sample_{p}_{gc_options}_events.jfr"
+
+
+def run_sample_app_jfr(gc_option: str, platform: str = None):
+    """Run the jfr_sample app with JFR to produce additional event coverage."""
+    if not os.path.exists(GRAALVM_SAMPLE_APP_SRC):
+        return
+    out_dir = GRAALVM_SAMPLE_APP_OUT
+    app_jar = GRAALVM_SAMPLE_APP_JAR
+    jfr_file = jfr_sample_app_file_name(gc_option, platform)
+    os.makedirs(out_dir, exist_ok=True)
+    if not os.path.exists(app_jar):
+        execute(f"javac -d {out_dir} {GRAALVM_SAMPLE_APP_SRC}")
+        execute(f"jar -cfe {app_jar} jfr_sample.Main -C {out_dir} .")
+    execute(["java",
+             f"-XX:StartFlightRecording=filename={jfr_file},settings={JFC_FILE},duration=20s",
+             "-XX:+" + gc_option, "-jar", app_jar])
+
+
 def list_gc_options() -> List[str]:
     """ List all GC options for the current JDK """
     global GC_OPTIONS
@@ -453,7 +475,7 @@ def list_gc_options() -> List[str]:
 
 
 def create_jfc():
-    """ Create a maximalist JFC file: all events enabled, thresholds zeroed """
+    """ Create a maximalist JFC file: all events enabled, thresholds zeroed, level=all """
     import re as _re
     print("Creating JFC configuration file...")
     with open(os.getenv("JAVA_HOME") + "/lib/jfr/profile.jfc") as f:
@@ -465,6 +487,11 @@ def create_jfc():
         r'(<setting name="threshold"[^>]*>)[^<]+(<)',
         r'\g<1>0 ms\2',
         content)
+    # Use level=all for DeprecatedInvocation to capture all deprecated calls (not just forRemoval)
+    content = _re.sub(
+        r'(name="jdk\.DeprecatedInvocation".*?<setting name="level">)[^<]+(</setting>)',
+        r'\g<1>all\2',
+        content, flags=_re.DOTALL)
     with open(JFC_FILE, "w") as f2:
         f2.write(content)
     print(f"✅ JFC file created at {JFC_FILE}")
@@ -514,6 +541,8 @@ def create_jfr(gc_option: str = None, force: bool = False):
             if not os.path.exists(jfr_file_name(gc_option)):
                 raise ex
             print(f"Caught a Java error", file=sys.stderr)
+        # Also run the sample app to capture additional event types not in renaissance
+        run_sample_app_jfr(gc_option)
     else:
         print(
             f"Creating JFR file for GC options: {', '.join(list_gc_options())}")
@@ -586,9 +615,12 @@ def add_examples(repo: Repo):
         if not os.path.exists(jfr_file):
             print(f"Skipping {label}: JFR file not found: {jfr_file}")
             continue
+        # Include the sample app JFR if present (provides additional event coverage)
+        sample_file = jfr_sample_app_file_name(gc_option, platform)
+        files_arg = f"{jfr_file},{sample_file}" if os.path.exists(sample_file) else jfr_file
         execute(
             f"java -cp {get_parser_or_build()} me.bechberger.collector.ExampleAdderKt {metadata_file} "
-            f"--platform={platform} {label} \"{description}\" {jfr_file} {metadata_file}")
+            f"--platform={platform} {label} \"{description}\" {files_arg} {metadata_file}")
 
 
 GRAALVM_SAMPLE_APP_SRC = f"{CURRENT_DIR}/src/main/java/jfr_sample/Main.java"
