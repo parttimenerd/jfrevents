@@ -268,9 +268,6 @@ class Main(
         val period: String?,
         val inGraal: Boolean,
         val inGraalOnly: Boolean,
-        val notOnLinux: Boolean = false,
-        val notOnMacos: Boolean = false,
-        val notOnWindows: Boolean = false,
     )
 
     data class TypeDescriptorScope(val name: String, val description: String? = null, val link: String? = null)
@@ -796,21 +793,6 @@ class Main(
                 },
                 inGraal = event.isInJDKAndGraal() || event.isGraalOnly(),
                 inGraalOnly = event.isGraalOnly(),
-                notOnLinux = run {
-                    val knownPlatforms = metadata.exampleFiles.mapNotNull { it.platform }.toSet()
-                    val appearedOn = event.appearedIn.mapNotNull { metadata.exampleFiles[it].platform }.toSet()
-                    knownPlatforms.size > 1 && "linux" in knownPlatforms && "linux" !in appearedOn
-                },
-                notOnMacos = run {
-                    val knownPlatforms = metadata.exampleFiles.mapNotNull { it.platform }.toSet()
-                    val appearedOn = event.appearedIn.mapNotNull { metadata.exampleFiles[it].platform }.toSet()
-                    knownPlatforms.size > 1 && "macos" in knownPlatforms && "macos" !in appearedOn
-                },
-                notOnWindows = run {
-                    val knownPlatforms = metadata.exampleFiles.mapNotNull { it.platform }.toSet()
-                    val appearedOn = event.appearedIn.mapNotNull { metadata.exampleFiles[it].platform }.toSet()
-                    knownPlatforms.size > 1 && "windows" in knownPlatforms && "windows" !in appearedOn
-                },
             ),
             source = event.source,
             configurations = createConfigurationScope(metadata, event),
