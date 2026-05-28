@@ -453,17 +453,20 @@ def list_gc_options() -> List[str]:
 
 
 def create_jfc():
-    """ Create a JFC file for the current JDK """
+    """ Create a maximalist JFC file: all events enabled, thresholds zeroed """
+    import re as _re
     print("Creating JFC configuration file...")
     with open(os.getenv("JAVA_HOME") + "/lib/jfr/profile.jfc") as f:
-        lines = []
-        for line in f.readlines():
-            if 'name="enabled"' in line:
-                lines.append(line.replace(">false<", ">true<"))
-            else:
-                lines.append(line)
-        with open(JFC_FILE, "w") as f2:
-            f2.write("\n".join(lines))
+        content = f.read()
+    # Enable all disabled events
+    content = content.replace(">false<", ">true<")
+    # Zero all thresholds so short-duration events are captured
+    content = _re.sub(
+        r'(<setting name="threshold"[^>]*>)[^<]+(<)',
+        r'\g<1>0 ms\2',
+        content)
+    with open(JFC_FILE, "w") as f2:
+        f2.write(content)
     print(f"✅ JFC file created at {JFC_FILE}")
 
 
