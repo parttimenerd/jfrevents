@@ -454,10 +454,16 @@ def run_sample_app_jfr(gc_option: str, platform: str = None):
     jfr_file = jfr_sample_app_file_name(gc_option, platform)
     os.makedirs(out_dir, exist_ok=True)
     if not os.path.exists(app_jar):
-        execute(f"javac -d {out_dir} {GRAALVM_SAMPLE_APP_SRC}")
+        execute(f"javac --add-exports=java.base/jdk.internal.vm.annotation=ALL-UNNAMED "
+                f"-d {out_dir} {GRAALVM_SAMPLE_APP_SRC}")
         execute(f"jar -cfe {app_jar} jfr_sample.Main -C {out_dir} .")
     execute(["java",
-             f"-XX:StartFlightRecording=filename={jfr_file},settings={JFC_FILE},duration=20s",
+             "--add-exports=java.base/jdk.internal.vm.annotation=ALL-UNNAMED",
+             "-Djdk.attach.allowAttachSelf=true",
+             "-XX:+UnlockDiagnosticVMOptions",
+             "-XX:DiagnoseSyncOnValueBasedClasses=2",
+             "-XX:NativeMemoryTracking=summary",
+             f"-XX:StartFlightRecording=filename={jfr_file},settings={JFC_FILE},duration=27s",
              "-XX:+" + gc_option, "-jar", app_jar])
 
 
@@ -491,6 +497,11 @@ def create_jfc():
     content = _re.sub(
         r'(name="jdk\.DeprecatedInvocation".*?<setting name="level">)[^<]+(</setting>)',
         r'\g<1>all\2',
+        content, flags=_re.DOTALL)
+    # Shorten ThreadDump period so it fires within a 20s recording
+    content = _re.sub(
+        r'(name="jdk\.ThreadDump".*?<setting name="period"[^>]*>)\s*60 s\s*(<)',
+        r'\g<1>10 s\2',
         content, flags=_re.DOTALL)
     with open(JFC_FILE, "w") as f2:
         f2.write(content)
