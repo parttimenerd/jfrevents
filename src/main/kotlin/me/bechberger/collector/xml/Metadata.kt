@@ -538,12 +538,16 @@ class ExampleFile() {
     @JacksonXmlProperty(isAttribute = true)
     lateinit var label: String
 
+    @JacksonXmlProperty(isAttribute = true)
+    var platform: String? = null
+
     @JacksonXmlText
     lateinit var description: String
 
-    constructor(label: String, description: String) : this() {
+    constructor(label: String, description: String, platform: String? = null) : this() {
         this.label = label
         this.description = description
+        this.platform = platform
     }
 }
 

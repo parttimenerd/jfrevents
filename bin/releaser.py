@@ -143,6 +143,27 @@ def download_file(url, path: str, retention: int = CACHE_TIME) -> str:
     return cache_path
 
 
+GRAAL_JFR_DOCS_URL = f"https://raw.githubusercontent.com/{GRAAL_REPO}/master/docs/reference-manual/native-image/JFR.md"
+GRAAL_SUPPORTED_EVENTS_CACHE = f"{CACHE_DIR}/graal_supported_events.json"
+# Refresh weekly — the list rarely changes between GraalVM releases
+GRAAL_EVENTS_CACHE_TIME = 60 * 60 * 24 * 7
+
+
+def fetch_graal_supported_events() -> List[str]:
+    """Fetch the list of Java-level JDK JFR events supported by GraalVM Native Image
+    by parsing the oracle/graal JFR.md documentation."""
+    md_path = download_file(GRAAL_JFR_DOCS_URL, "graal_jfr.md", retention=GRAAL_EVENTS_CACHE_TIME)
+    events = []
+    with open(md_path) as f:
+        for line in f:
+            # Match table cells containing jdk.EventName (with optional footnote markers like [^1])
+            for word in line.split():
+                word = word.strip("|` \t")
+                if word.startswith("jdk.") and word.replace("jdk.", "").isidentifier():
+                    events.append(word[len("jdk."):])
+    return list(dict.fromkeys(events))  # deduplicate, preserve order
+
+
 def download_json(url, path: str) -> Any:
     """ Download the JSON file from the given URL and save it to the given path, return the JSON object """
     with open(download_file(url, path)) as f:
@@ -397,8 +418,25 @@ def get_parser_or_build() -> str:
 GC_OPTIONS = []
 
 
-def jfr_file_name(gc_options: str) -> str:
-    return f"{JFR_FOLDER}/sample_{gc_options}.jfr"
+def get_platform() -> str:
+    """Return a short lowercase platform identifier.
+    In CI, set the PLATFORM env var to ${{ runner.os }} (Linux, macOS, Windows).
+    Locally falls back to sys.platform."""
+    env = os.getenv("PLATFORM")
+    if env:
+        return env.lower()
+    import sys as _sys
+    p = _sys.platform
+    if p.startswith("darwin"):
+        return "macos"
+    if p.startswith("win"):
+        return "windows"
+    return "linux"
+
+
+def jfr_file_name(gc_options: str, platform: str = None) -> str:
+    p = platform or get_platform()
+    return f"{JFR_FOLDER}/sample_{p}_{gc_options}.jfr"
 
 
 def list_gc_options() -> List[str]:
@@ -505,8 +543,20 @@ def add_graal_events(repo: Repo):
     execute(
         f"java -cp {get_parser_or_build()} me.bechberger.collector.GraalEventAdderKt {metadata_file} {graal_folder(graal_version)} "
         f"{graal_version.url} {graal_version.graal_version} {graal_version.tag} {metadata_file}")
+    add_java_level_graal_events(repo)
 
 
+def add_java_level_graal_events(repo: Repo):
+    """Mark Java-level JDK JFR events supported by GraalVM Native Image using the oracle/graal JFR.md docs."""
+    metadata_file = meta_file_name(repo)
+    events = fetch_graal_supported_events()
+    if not events:
+        print("Warning: no Java-level Graal events fetched from JFR.md — skipping")
+        return
+    events_args = " ".join(events)
+    execute(
+        f"java -cp {get_parser_or_build()} me.bechberger.collector.MarkJavaLevelGraalEventsKt "
+        f"{metadata_file} {events_args} {metadata_file}")
 
 def java_version() -> str:
     return subprocess.check_output(
@@ -516,13 +566,14 @@ def java_version() -> str:
 
 def add_examples(repo: Repo):
     metadata_file = meta_file_name(repo)
+    platform = get_platform()
     for gc_option in list_gc_options():
         gc = gc_option[3:]
-        label = gc
-        description = f"Run of renaissance benchmark with {gc} on {java_version()}"
+        label = f"{platform}_{gc}"
+        description = f"Run of renaissance benchmark with {gc} on Java {java_version().strip()} ({platform})"
         execute(
             f"java -cp {get_parser_or_build()} me.bechberger.collector.ExampleAdderKt {metadata_file} "
-            f"{label} \"{description}\" {jfr_file_name(gc_option)} {metadata_file}")
+            f"{label} \"{description}\" {jfr_file_name(gc_option, platform)} {metadata_file}")
 
 
 def add_additional_descriptions(repo: Repo):

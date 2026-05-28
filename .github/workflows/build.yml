@@ -261,13 +261,14 @@ jobs:
           retention-days: ${{ env.TEMP_ARTIFACT_RETENTION_DAYS }}
 
   create-jfr:
-    name: Create JFR (${{ matrix.gc }})
+    name: Create JFR (${{ matrix.os }}, ${{ matrix.gc }})
     needs: [changes, prepare-jfr]
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     strategy:
       matrix:
         gc: ${{ fromJSON(needs.prepare-jfr.outputs.gc-matrix) }}
+        os: [ubuntu-latest, macos-latest]
       fail-fast: false
 
     steps:
@@ -288,14 +289,15 @@ jobs:
           CURRENT_MONTH=$(date +%Y-%m)
           echo "java-version=$JAVA_VER" >> $GITHUB_OUTPUT
           echo "month=$CURRENT_MONTH" >> $GITHUB_OUTPUT
+          echo "platform=$(echo '${{ runner.os }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
 
-      - name: Restore cached JFR for ${{ matrix.gc }}
+      - name: Restore cached JFR for ${{ matrix.os }}, ${{ matrix.gc }}
         id: jfr-cache
         if: needs.changes.outputs.cache-mode == 'normal'
         uses: actions/cache@v4
         with:
-          path: jfr/sample_${{ matrix.gc }}.jfr
-          key: jfr-${{ matrix.gc }}-${{ steps.cache-info.outputs.month }}-java${{ steps.cache-info.outputs.java-version }}
+          path: jfr/sample_${{ steps.cache-info.outputs.platform }}_${{ matrix.gc }}.jfr
+          key: jfr-${{ matrix.os }}-${{ matrix.gc }}-${{ steps.cache-info.outputs.month }}-java${{ steps.cache-info.outputs.java-version }}
 
       - name: Download JFC configuration
         if: steps.jfr-cache.outputs.cache-hit != 'true'
@@ -308,17 +310,18 @@ jobs:
         if: steps.jfr-cache.outputs.cache-hit != 'true'
         env:
           GC: ${{ matrix.gc }}
+          PLATFORM: ${{ steps.cache-info.outputs.platform }}
         run: |
           set -euo pipefail
           chmod +x bin/releaser.py
-          bin/releaser.py create_jfr 2>&1 | tee "create_jfr_${{ matrix.gc }}.log"
+          bin/releaser.py create_jfr 2>&1 | tee "create_jfr_${{ matrix.os }}_${{ matrix.gc }}.log"
 
       - name: Upload JFR creation log on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: jfr-creation-log-${{ matrix.gc }}-${{ github.run_number }}
-          path: create_jfr_${{ matrix.gc }}.log
+          name: jfr-creation-log-${{ matrix.os }}-${{ matrix.gc }}-${{ github.run_number }}
+          path: create_jfr_${{ matrix.os }}_${{ matrix.gc }}.log
           retention-days: ${{ env.LOG_RETENTION_DAYS }}
           if-no-files-found: ignore
 
@@ -326,7 +329,7 @@ jobs:
         if: steps.jfr-cache.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
-          JFR_FILE="jfr/sample_${{ matrix.gc }}.jfr"
+          JFR_FILE="jfr/sample_${{ steps.cache-info.outputs.platform }}_${{ matrix.gc }}.jfr"
           if [ ! -f "$JFR_FILE" ]; then
             echo "ERROR: JFR file not found: $JFR_FILE"
             exit 1
@@ -341,8 +344,8 @@ jobs:
       - name: Upload JFR file
         uses: actions/upload-artifact@v4
         with:
-          name: jfr-${{ matrix.gc }}
-          path: jfr/sample_${{ matrix.gc }}.jfr
+          name: jfr-${{ matrix.os }}-${{ matrix.gc }}
+          path: jfr/sample_${{ steps.cache-info.outputs.platform }}_${{ matrix.gc }}.jfr
           retention-days: ${{ env.TEMP_ARTIFACT_RETENTION_DAYS }}
 
   build:
@@ -434,10 +437,11 @@ jobs:
           set -euo pipefail
           mkdir -p jfr
           find jfr-artifacts -name "*.jfr" -exec mv {} jfr/ \;
-          
-          EXPECTED_COUNT="${{ needs.prepare-jfr.outputs.gc-count }}"
+
+          # Each GC option produces one JFR file per OS platform (ubuntu + macos = 2)
+          EXPECTED_COUNT=$(( ${{ needs.prepare-jfr.outputs.gc-count }} * 2 ))
           ACTUAL_COUNT=$(ls -1 jfr/*.jfr 2>/dev/null | wc -l | tr -d ' ')
-          
+
           if [ "$ACTUAL_COUNT" -ne "$EXPECTED_COUNT" ]; then
             echo "ERROR: Expected $EXPECTED_COUNT JFR files but found $ACTUAL_COUNT"
             ls -lh jfr/ || echo "No files"
@@ -457,7 +461,7 @@ jobs:
           set -euo pipefail
           chmod +x bin/releaser.py
           bin/releaser.py build_parser 2>&1 | tee build_parser.log
-          bin/releaser.py build_versions 2>&1 | tee build_versions.log
+          PLATFORM=linux bin/releaser.py build_versions 2>&1 | tee build_versions.log
           bin/releaser.py build 2>&1 | tee build.log
 
       - name: Install to local Maven repo
