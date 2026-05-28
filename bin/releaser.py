@@ -612,9 +612,13 @@ def build_version(repo: Repo, force: bool = False):
     download_repo_if_not_exists(repo)
     meta_file = meta_file_name(repo)
     meta_wo_examples = meta_file_name(repo, wo_examples=True)
-    # copy metadata
-    generated_example_min_mtime = min(os.path.getmtime(jfr_file_name(gc_option))
-                                      for gc_option in list_gc_options())
+    # copy metadata — consider all JFR files present regardless of platform
+    import glob as _glob
+    all_jfr_files = _glob.glob(f"{JFR_FOLDER}/sample_*.jfr")
+    generated_example_min_mtime = min(
+        (os.path.getmtime(f) for f in all_jfr_files),
+        default=0
+    )
     if os.path.exists(meta_file):
         meta_file_mtime = os.path.getmtime(meta_file)
         if not force and meta_file_mtime > \

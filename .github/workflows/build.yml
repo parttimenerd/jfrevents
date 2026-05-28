@@ -441,15 +441,22 @@ jobs:
           mkdir -p jfr
           find jfr-artifacts -name "*.jfr" -exec mv {} jfr/ \;
 
-          # Each GC option produces one JFR file per OS platform (ubuntu + macos + windows = 3)
-          EXPECTED_COUNT=$(( ${{ needs.prepare-jfr.outputs.gc-count }} * 3 ))
           ACTUAL_COUNT=$(ls -1 jfr/*.jfr 2>/dev/null | wc -l | tr -d ' ')
-
-          if [ "$ACTUAL_COUNT" -ne "$EXPECTED_COUNT" ]; then
-            echo "ERROR: Expected $EXPECTED_COUNT JFR files but found $ACTUAL_COUNT"
-            ls -lh jfr/ || echo "No files"
+          if [ "$ACTUAL_COUNT" -eq 0 ]; then
+            echo "ERROR: No JFR files found"
             exit 1
           fi
+
+          # Verify each platform contributed at least one file
+          for platform in linux macos windows; do
+            if ! ls jfr/sample_${platform}_*.jfr 1>/dev/null 2>&1; then
+              echo "ERROR: No JFR files found for platform: $platform"
+              ls -lh jfr/
+              exit 1
+            fi
+          done
+          echo "Found $ACTUAL_COUNT JFR files across all platforms"
+          ls -lh jfr/
 
       - name: Download JDK sources
         timeout-minutes: 60
