@@ -677,6 +677,7 @@ jobs:
     needs: [changes, build]
     if: |
       always() &&
+      github.ref == 'refs/heads/main' &&
       (needs.build.result == 'success' || (needs.changes.outputs.website == 'true' && needs.build.result == 'skipped'))
     runs-on: ubuntu-latest
     timeout-minutes: 45
