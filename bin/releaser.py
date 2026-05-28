@@ -705,6 +705,7 @@ def add_graal_examples(repo: Repo):
 
 
 def add_additional_descriptions(repo: Repo):
+    metadata_file = meta_file_name(repo)
     log(f"Add additional descriptions for version {repo.version} via AI")
     execute(
         f"java -cp {get_parser_or_build()} me.bechberger.collector.AdditionalDescriptionAdderKt {metadata_file} "
