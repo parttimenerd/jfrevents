@@ -44,15 +44,15 @@
     <span class="badge bg-success graal-badge">graal vm</span>
   {{/inGraal}}
   {{/inGraalOnly}}
-  {{#linuxOnly}}
-    <span class="badge bg-secondary platform-badge" title="Only observed on Linux">Linux only</span>
-  {{/linuxOnly}}
-  {{#macosOnly}}
-    <span class="badge bg-secondary platform-badge" title="Only observed on macOS">macOS only</span>
-  {{/macosOnly}}
-  {{#windowsOnly}}
-    <span class="badge bg-secondary platform-badge" title="Only observed on Windows">Windows only</span>
-  {{/windowsOnly}}
+  {{#notOnLinux}}
+    <span class="badge bg-secondary platform-badge" title="Not observed on Linux in any recording">not on Linux</span>
+  {{/notOnLinux}}
+  {{#notOnMacos}}
+    <span class="badge bg-secondary platform-badge" title="Not observed on macOS in any recording">not on macOS</span>
+  {{/notOnMacos}}
+  {{#notOnWindows}}
+    <span class="badge bg-secondary platform-badge" title="Not observed on Windows in any recording">not on Windows</span>
+  {{/notOnWindows}}
   {{/flags}}
 </p>
 {{#source}}

@@ -268,9 +268,9 @@ class Main(
         val period: String?,
         val inGraal: Boolean,
         val inGraalOnly: Boolean,
-        val linuxOnly: Boolean = false,
-        val macosOnly: Boolean = false,
-        val windowsOnly: Boolean = false,
+        val notOnLinux: Boolean = false,
+        val notOnMacos: Boolean = false,
+        val notOnWindows: Boolean = false,
     )
 
     data class TypeDescriptorScope(val name: String, val description: String? = null, val link: String? = null)
@@ -796,17 +796,20 @@ class Main(
                 },
                 inGraal = event.isInJDKAndGraal() || event.isGraalOnly(),
                 inGraalOnly = event.isGraalOnly(),
-                linuxOnly = run {
-                    val platforms = event.appearedIn.mapNotNull { metadata.exampleFiles[it].platform }.toSet()
-                    platforms.isNotEmpty() && platforms == setOf("linux")
+                notOnLinux = run {
+                    val knownPlatforms = metadata.exampleFiles.mapNotNull { it.platform }.toSet()
+                    val appearedOn = event.appearedIn.mapNotNull { metadata.exampleFiles[it].platform }.toSet()
+                    knownPlatforms.size > 1 && "linux" in knownPlatforms && "linux" !in appearedOn
                 },
-                macosOnly = run {
-                    val platforms = event.appearedIn.mapNotNull { metadata.exampleFiles[it].platform }.toSet()
-                    platforms.isNotEmpty() && platforms == setOf("macos")
+                notOnMacos = run {
+                    val knownPlatforms = metadata.exampleFiles.mapNotNull { it.platform }.toSet()
+                    val appearedOn = event.appearedIn.mapNotNull { metadata.exampleFiles[it].platform }.toSet()
+                    knownPlatforms.size > 1 && "macos" in knownPlatforms && "macos" !in appearedOn
                 },
-                windowsOnly = run {
-                    val platforms = event.appearedIn.mapNotNull { metadata.exampleFiles[it].platform }.toSet()
-                    platforms.isNotEmpty() && platforms == setOf("windows")
+                notOnWindows = run {
+                    val knownPlatforms = metadata.exampleFiles.mapNotNull { it.platform }.toSet()
+                    val appearedOn = event.appearedIn.mapNotNull { metadata.exampleFiles[it].platform }.toSet()
+                    knownPlatforms.size > 1 && "windows" in knownPlatforms && "windows" !in appearedOn
                 },
             ),
             source = event.source,
