@@ -267,7 +267,10 @@ class Main(
         val hasThread: Boolean,
         val period: String?,
         val inGraal: Boolean,
-        val inGraalOnly: Boolean
+        val inGraalOnly: Boolean,
+        val linuxOnly: Boolean = false,
+        val macosOnly: Boolean = false,
+        val windowsOnly: Boolean = false,
     )
 
     data class TypeDescriptorScope(val name: String, val description: String? = null, val link: String? = null)
@@ -449,7 +452,7 @@ class Main(
         )
     }
 
-    data class ExampleScope(val name: String, val content: String = "")
+    data class ExampleScope(val name: String, val content: String = "", val platform: String? = null)
 
     data class ExamplesScope(val id: String, val examples: DecoratedCollection<ExampleScope>)
 
@@ -543,7 +546,8 @@ class Main(
         metadata: Metadata,
         example: Example,
     ): ExampleScope {
-        return ExampleScope(metadata.getExampleName(example.exampleFile), formatExample(metadata, example))
+        val file = metadata.exampleFiles[example.exampleFile]
+        return ExampleScope(file.label, formatExample(metadata, example), file.platform)
     }
 
     data class EventScope(
@@ -792,6 +796,18 @@ class Main(
                 },
                 inGraal = event.isInJDKAndGraal() || event.isGraalOnly(),
                 inGraalOnly = event.isGraalOnly(),
+                linuxOnly = run {
+                    val platforms = event.appearedIn.mapNotNull { metadata.exampleFiles[it].platform }.toSet()
+                    platforms.isNotEmpty() && platforms == setOf("linux")
+                },
+                macosOnly = run {
+                    val platforms = event.appearedIn.mapNotNull { metadata.exampleFiles[it].platform }.toSet()
+                    platforms.isNotEmpty() && platforms == setOf("macos")
+                },
+                windowsOnly = run {
+                    val platforms = event.appearedIn.mapNotNull { metadata.exampleFiles[it].platform }.toSet()
+                    platforms.isNotEmpty() && platforms == setOf("windows")
+                },
             ),
             source = event.source,
             configurations = createConfigurationScope(metadata, event),
