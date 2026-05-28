@@ -328,13 +328,15 @@ jobs:
           if-no-files-found: ignore
 
       - name: Verify JFR file created
+        id: verify-jfr
         if: steps.jfr-cache.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
           JFR_FILE="jfr/sample_${{ steps.cache-info.outputs.platform }}_${{ matrix.gc }}.jfr"
           if [ ! -f "$JFR_FILE" ]; then
-            echo "ERROR: JFR file not found: $JFR_FILE"
-            exit 1
+            echo "WARNING: JFR file not found: $JFR_FILE (GC may not be supported on this platform)"
+            echo "exists=false" >> $GITHUB_OUTPUT
+            exit 0
           fi
           FILE_SIZE=$(wc -c < "$JFR_FILE")
           if [ "$FILE_SIZE" -lt ${{ env.MIN_JFR_FILE_SIZE_BYTES }} ]; then
@@ -342,8 +344,10 @@ jobs:
             exit 1
           fi
           echo "JFR file verified: $FILE_SIZE bytes"
+          echo "exists=true" >> $GITHUB_OUTPUT
 
       - name: Upload JFR file
+        if: steps.verify-jfr.outputs.exists == 'true' || steps.jfr-cache.outputs.cache-hit == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: jfr-${{ matrix.os }}-${{ matrix.gc }}

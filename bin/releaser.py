@@ -493,6 +493,14 @@ def create_jfr(gc_option: str = None, force: bool = False):
         print(f"JFR file {jfr_file} already exists and is up to date")
         return
     if gc_option:
+        # Check that the GC flag is supported before running the full benchmark
+        check = subprocess.run(["java", "-XX:+" + gc_option, "-version"],
+                               capture_output=True)
+        if check.returncode != 0:
+            print(f"Skipping {gc_option}: not supported on this JVM/platform "
+                  f"({check.stderr.decode('utf-8', errors='replace').splitlines()[0] if check.stderr else 'unknown error'})",
+                  file=sys.stderr)
+            return
         print(f"Creating JFR file for GC option {gc_option}")
         try:
             execute(["java",
