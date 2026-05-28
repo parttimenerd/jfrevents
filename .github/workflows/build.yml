@@ -260,10 +260,11 @@ jobs:
             .cache/renaissance.jar
           retention-days: ${{ env.TEMP_ARTIFACT_RETENTION_DAYS }}
 
-  create-jfr:
-    name: Create JFR (${{ matrix.os }}, ${{ matrix.gc }})
+  create-jfr-linux:
+    name: Create JFR (ubuntu-latest, ${{ matrix.gc }})
     needs: [changes, prepare-jfr]
-    runs-on: ${{ matrix.os }}
+    if: needs.changes.outputs.collector == 'true'
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     defaults:
       run:
@@ -271,7 +272,104 @@ jobs:
     strategy:
       matrix:
         gc: ${{ fromJSON(needs.prepare-jfr.outputs.gc-matrix) }}
-        os: [ubuntu-latest, macos-latest, windows-latest]
+      fail-fast: false
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'sapmachine'
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - name: Get cache key info
+        id: cache-info
+        run: |
+          set -euo pipefail
+          JAVA_VER=$(java -version 2>&1 | head -n 1 | awk -F '"' '{print $2}')
+          CURRENT_MONTH=$(date +%Y-%m)
+          echo "java-version=$JAVA_VER" >> $GITHUB_OUTPUT
+          echo "month=$CURRENT_MONTH" >> $GITHUB_OUTPUT
+          echo "platform=linux" >> $GITHUB_OUTPUT
+
+      - name: Restore cached JFR for ubuntu-latest, ${{ matrix.gc }}
+        id: jfr-cache
+        if: needs.changes.outputs.cache-mode == 'normal'
+        uses: actions/cache@v4
+        with:
+          path: |
+            jfr/sample_linux_${{ matrix.gc }}.jfr
+            jfr/sample_linux_${{ matrix.gc }}_events.jfr
+          key: jfr-ubuntu-latest-${{ matrix.gc }}-${{ steps.cache-info.outputs.month }}-java${{ steps.cache-info.outputs.java-version }}
+
+      - name: Download JFC configuration
+        if: steps.jfr-cache.outputs.cache-hit != 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: jfc-config
+          path: .cache/
+
+      - name: Create JFR for ${{ matrix.gc }}
+        if: steps.jfr-cache.outputs.cache-hit != 'true'
+        env:
+          GC: ${{ matrix.gc }}
+          PLATFORM: linux
+        run: |
+          set -euo pipefail
+          python3 bin/releaser.py create_jfr 2>&1 | tee "create_jfr_ubuntu-latest_${{ matrix.gc }}.log"
+
+      - name: Upload JFR creation log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jfr-creation-log-ubuntu-latest-${{ matrix.gc }}-${{ github.run_number }}
+          path: create_jfr_ubuntu-latest_${{ matrix.gc }}.log
+          retention-days: ${{ env.LOG_RETENTION_DAYS }}
+          if-no-files-found: ignore
+
+      - name: Verify JFR file created
+        id: verify-jfr
+        if: steps.jfr-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          JFR_FILE="jfr/sample_linux_${{ matrix.gc }}.jfr"
+          if [ ! -f "$JFR_FILE" ]; then
+            echo "WARNING: JFR file not found: $JFR_FILE (GC may not be supported)"
+            echo "exists=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          FILE_SIZE=$(wc -c < "$JFR_FILE")
+          if [ "$FILE_SIZE" -lt ${{ env.MIN_JFR_FILE_SIZE_BYTES }} ]; then
+            echo "ERROR: JFR file too small: $FILE_SIZE bytes"
+            exit 1
+          fi
+          echo "JFR file verified: $FILE_SIZE bytes"
+          echo "exists=true" >> $GITHUB_OUTPUT
+
+      - name: Upload JFR file
+        if: steps.verify-jfr.outputs.exists == 'true' || steps.jfr-cache.outputs.cache-hit == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: jfr-ubuntu-latest-${{ matrix.gc }}
+          path: |
+            jfr/sample_linux_${{ matrix.gc }}.jfr
+            jfr/sample_linux_${{ matrix.gc }}_events.jfr
+          retention-days: ${{ env.TEMP_ARTIFACT_RETENTION_DAYS }}
+
+  create-jfr-other:
+    name: Create JFR (${{ matrix.os }}, UseG1GC)
+    needs: [changes, prepare-jfr]
+    if: needs.changes.outputs.collector == 'true'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      matrix:
+        os: [macos-latest, windows-latest]
       fail-fast: false
 
     steps:
@@ -294,15 +392,15 @@ jobs:
           echo "month=$CURRENT_MONTH" >> $GITHUB_OUTPUT
           echo "platform=$(echo '${{ runner.os }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
 
-      - name: Restore cached JFR for ${{ matrix.os }}, ${{ matrix.gc }}
+      - name: Restore cached JFR for ${{ matrix.os }}, UseG1GC
         id: jfr-cache
         if: needs.changes.outputs.cache-mode == 'normal'
         uses: actions/cache@v4
         with:
           path: |
-            jfr/sample_${{ steps.cache-info.outputs.platform }}_${{ matrix.gc }}.jfr
-            jfr/sample_${{ steps.cache-info.outputs.platform }}_${{ matrix.gc }}_events.jfr
-          key: jfr-${{ matrix.os }}-${{ matrix.gc }}-${{ steps.cache-info.outputs.month }}-java${{ steps.cache-info.outputs.java-version }}
+            jfr/sample_${{ steps.cache-info.outputs.platform }}_UseG1GC.jfr
+            jfr/sample_${{ steps.cache-info.outputs.platform }}_UseG1GC_events.jfr
+          key: jfr-${{ matrix.os }}-UseG1GC-${{ steps.cache-info.outputs.month }}-java${{ steps.cache-info.outputs.java-version }}
 
       - name: Download JFC configuration
         if: steps.jfr-cache.outputs.cache-hit != 'true'
@@ -311,21 +409,21 @@ jobs:
           name: jfc-config
           path: .cache/
 
-      - name: Create JFR for ${{ matrix.gc }}
+      - name: Create JFR for UseG1GC
         if: steps.jfr-cache.outputs.cache-hit != 'true'
         env:
-          GC: ${{ matrix.gc }}
+          GC: UseG1GC
           PLATFORM: ${{ steps.cache-info.outputs.platform }}
         run: |
           set -euo pipefail
-          python3 bin/releaser.py create_jfr 2>&1 | tee "create_jfr_${{ matrix.os }}_${{ matrix.gc }}.log"
+          python3 bin/releaser.py create_jfr 2>&1 | tee "create_jfr_${{ matrix.os }}_UseG1GC.log"
 
       - name: Upload JFR creation log on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: jfr-creation-log-${{ matrix.os }}-${{ matrix.gc }}-${{ github.run_number }}
-          path: create_jfr_${{ matrix.os }}_${{ matrix.gc }}.log
+          name: jfr-creation-log-${{ matrix.os }}-UseG1GC-${{ github.run_number }}
+          path: create_jfr_${{ matrix.os }}_UseG1GC.log
           retention-days: ${{ env.LOG_RETENTION_DAYS }}
           if-no-files-found: ignore
 
@@ -334,9 +432,9 @@ jobs:
         if: steps.jfr-cache.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
-          JFR_FILE="jfr/sample_${{ steps.cache-info.outputs.platform }}_${{ matrix.gc }}.jfr"
+          JFR_FILE="jfr/sample_${{ steps.cache-info.outputs.platform }}_UseG1GC.jfr"
           if [ ! -f "$JFR_FILE" ]; then
-            echo "WARNING: JFR file not found: $JFR_FILE (GC may not be supported on this platform)"
+            echo "WARNING: JFR file not found: $JFR_FILE"
             echo "exists=false" >> $GITHUB_OUTPUT
             exit 0
           fi
@@ -352,10 +450,10 @@ jobs:
         if: steps.verify-jfr.outputs.exists == 'true' || steps.jfr-cache.outputs.cache-hit == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: jfr-${{ matrix.os }}-${{ matrix.gc }}
+          name: jfr-${{ matrix.os }}-UseG1GC
           path: |
-            jfr/sample_${{ steps.cache-info.outputs.platform }}_${{ matrix.gc }}.jfr
-            jfr/sample_${{ steps.cache-info.outputs.platform }}_${{ matrix.gc }}_events.jfr
+            jfr/sample_${{ steps.cache-info.outputs.platform }}_UseG1GC.jfr
+            jfr/sample_${{ steps.cache-info.outputs.platform }}_UseG1GC_events.jfr
           retention-days: ${{ env.TEMP_ARTIFACT_RETENTION_DAYS }}
 
   create-jfr-graal:
@@ -431,13 +529,14 @@ jobs:
 
   build:
     name: Build Collector
-    needs: [changes, prepare-jfr, create-jfr, create-jfr-graal, test]
+    needs: [changes, prepare-jfr, create-jfr-linux, create-jfr-other, create-jfr-graal, test]
     if: |
       always() &&
       needs.changes.outputs.collector == 'true' &&
       needs.prepare-jfr.result == 'success' &&
       needs.test.result == 'success' &&
-      (needs.create-jfr.result == 'success' || needs.create-jfr.result == 'skipped') &&
+      (needs.create-jfr-linux.result == 'success' || needs.create-jfr-linux.result == 'skipped') &&
+      (needs.create-jfr-other.result == 'success' || needs.create-jfr-other.result == 'skipped') &&
       (needs.create-jfr-graal.result == 'success' || needs.create-jfr-graal.result == 'skipped')
     runs-on: ubuntu-latest
     timeout-minutes: 60
