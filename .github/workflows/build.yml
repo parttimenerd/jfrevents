@@ -316,8 +316,7 @@ jobs:
           PLATFORM: ${{ steps.cache-info.outputs.platform }}
         run: |
           set -euo pipefail
-          chmod +x bin/releaser.py
-          bin/releaser.py create_jfr 2>&1 | tee "create_jfr_${{ matrix.os }}_${{ matrix.gc }}.log"
+          python3 bin/releaser.py create_jfr 2>&1 | tee "create_jfr_${{ matrix.os }}_${{ matrix.gc }}.log"
 
       - name: Upload JFR creation log on failure
         if: failure()
