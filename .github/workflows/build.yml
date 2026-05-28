@@ -265,10 +265,13 @@ jobs:
     needs: [changes, prepare-jfr]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
     strategy:
       matrix:
         gc: ${{ fromJSON(needs.prepare-jfr.outputs.gc-matrix) }}
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
       fail-fast: false
 
     steps:
@@ -438,8 +441,8 @@ jobs:
           mkdir -p jfr
           find jfr-artifacts -name "*.jfr" -exec mv {} jfr/ \;
 
-          # Each GC option produces one JFR file per OS platform (ubuntu + macos = 2)
-          EXPECTED_COUNT=$(( ${{ needs.prepare-jfr.outputs.gc-count }} * 2 ))
+          # Each GC option produces one JFR file per OS platform (ubuntu + macos + windows = 3)
+          EXPECTED_COUNT=$(( ${{ needs.prepare-jfr.outputs.gc-count }} * 3 ))
           ACTUAL_COUNT=$(ls -1 jfr/*.jfr 2>/dev/null | wc -l | tr -d ' ')
 
           if [ "$ACTUAL_COUNT" -ne "$EXPECTED_COUNT" ]; then
