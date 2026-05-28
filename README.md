@@ -1,3 +1,5 @@
+__Archived, use https://github.com/SAP/jfrevents__
+
 [![REUSE status](https://api.reuse.software/badge/github.com/SAP/jfrevents)](https://api.reuse.software/info/github.com/SAP/jfrevents)
 
 JFR Event Collector
