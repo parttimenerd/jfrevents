@@ -42,6 +42,7 @@ concurrency:
 
 env:
   JAVA_VERSION: '21'
+  GRAALVM_VERSION: '23'
   PYTHON_VERSION: '3.11'
   ARTIFACT_RETENTION_DAYS: 90
   LOG_RETENTION_DAYS: 30
@@ -475,7 +476,7 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: graalvm
-          java-version: ${{ env.JAVA_VERSION }}
+          java-version: ${{ env.GRAALVM_VERSION }}
 
       - name: Get cache key info
         id: cache-info
@@ -537,7 +538,7 @@ jobs:
       needs.test.result == 'success' &&
       (needs.create-jfr-linux.result == 'success' || needs.create-jfr-linux.result == 'skipped') &&
       (needs.create-jfr-other.result == 'success' || needs.create-jfr-other.result == 'skipped') &&
-      (needs.create-jfr-graal.result == 'success' || needs.create-jfr-graal.result == 'skipped')
+      (needs.create-jfr-graal.result == 'success' || needs.create-jfr-graal.result == 'skipped' || needs.create-jfr-graal.result == 'failure')
     runs-on: ubuntu-latest
     timeout-minutes: 60
     outputs:
@@ -886,9 +887,14 @@ jobs:
             echo "=== JAR Contents Preview ==="
             unzip -l "$INSTALLED_JAR" | grep "me/bechberger/collector/xml" | head -10 || echo "WARNING: No xml package found in JAR"
           else
-            echo "=== Website-only rebuild: Using dependency from pom.xml ==="
-            echo "No build artifacts found. Maven will resolve jfreventcollection from configured repositories."
-            echo "This is expected for website-only rebuilds."
+            echo "=== Website-only rebuild: checking Maven cache for jfreventcollection ==="
+            CACHED_JAR=$(find "$HOME/.m2/repository/me/bechberger/jfreventcollection" -name "*.jar" -not -name "*-sources.jar" -not -name "*-javadoc.jar" 2>/dev/null | head -1)
+            if [ -z "$CACHED_JAR" ]; then
+              echo "ERROR: jfreventcollection not found in Maven cache and no build artifacts present."
+              echo "Run the full build (not website-only) at least once to populate the cache."
+              exit 1
+            fi
+            echo "✓ Found jfreventcollection in Maven cache: $CACHED_JAR"
           fi
 
       - name: Build website generator and generate site
