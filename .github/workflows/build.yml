@@ -41,7 +41,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  JAVA_VERSION: '21'
+  JAVA_VERSION: '25'
   GRAALVM_VERSION: '23'
   PYTHON_VERSION: '3.11'
   ARTIFACT_RETENTION_DAYS: 90
