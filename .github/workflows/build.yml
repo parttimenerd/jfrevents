@@ -42,6 +42,7 @@ concurrency:
 
 env:
   JAVA_VERSION: '21'
+  GRAALVM_VERSION: '25'
   PYTHON_VERSION: '3.11'
   ARTIFACT_RETENTION_DAYS: 90
   LOG_RETENTION_DAYS: 30
@@ -475,7 +476,7 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: graalvm
-          java-version: ${{ env.JAVA_VERSION }}
+          java-version: ${{ env.GRAALVM_VERSION }}
 
       - name: Get cache key info
         id: cache-info
