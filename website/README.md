@@ -14,7 +14,7 @@ Build
 mvn dependency:resolve -U
 mvn clean package assembly:single
 # generate it into site
-java -jar target/jfrevents-site-generator.jar site
+java -jar target/jfrevents-site-generator.jar generate site
 ```
 
 Site generator options:

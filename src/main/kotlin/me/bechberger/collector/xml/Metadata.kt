@@ -144,7 +144,7 @@ class Metadata {
 
     fun read(path: Path) = path.readXmlAs(Metadata::class.java)
 
-    fun String.normalizeName() = this.split(".").last().toLowerCase()
+    fun String.normalizeName() = this.split(".").last().lowercase()
 
     @get:JsonIgnore
     private val typesCache: MutableMap<String, AbstractType<Example>> by lazy {
@@ -538,12 +538,16 @@ class ExampleFile() {
     @JacksonXmlProperty(isAttribute = true)
     lateinit var label: String
 
+    @JacksonXmlProperty(isAttribute = true)
+    var platform: String? = null
+
     @JacksonXmlText
     lateinit var description: String
 
-    constructor(label: String, description: String) : this() {
+    constructor(label: String, description: String, platform: String? = null) : this() {
         this.label = label
         this.description = description
+        this.platform = platform
     }
 }
 

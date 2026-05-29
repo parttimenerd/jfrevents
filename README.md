@@ -1,6 +1,6 @@
 __Archived, use https://github.com/SAP/jfrevents__
 
-[![REUSE status](https://api.reuse.software/badge/github.com/SAP/jfrevents)](https://api.reuse.software/info/github.com/SAP/jfrevents)
+[![REUSE status](https://api.reuse.software/badge/github.com/SAP/jfrevents)](https://api.reuse.software/info/github.com/SAP/jfrevents) [![Build and Deploy](https://github.com/SAP/jfrevents/actions/workflows/build.yml/badge.svg)](https://github.com/SAP/jfrevents/actions/workflows/build.yml)
 
 JFR Event Collector
 =====================
@@ -36,9 +36,9 @@ so contributing it here still makes sense).
   [here](https://github.com/parttimenerd/jfreventcollector/releases/latest/download/jfreventcollection.jar).
 - The metadata itself: look no further than the releases page of this repository
 
-
-## Usage of the metadata including JAR in Code
-
+> **Note:** This library is no longer published to Maven Central due to lack of demand.
+> If you need Maven Central artifacts, please [file an issue](https://github.com/SAP/jfrevents/issues/new)
+> describing your use case.
 Useful when creating your own JFR Event Explorer like tool. The related JAR is called `jfreventcollection.jar`
 in the releases.
 
@@ -174,41 +174,44 @@ To use snapshots, you have to add the snapshot repository:
 ## Build and Deploy
 
 Use the `bin/releaser.sh` script:
-
+Run `bin/releaser.py download build_parser build_versions build deploy_gh`.
 ```sh
 Usage:
     python3 releaser.py <command> ... <command> [--force]
 
-Commands:
-    versions          print all available JDK versions
-    tags              print the current tag for all JDK versions
-    download_urls     print the latest source code download URLs for every JDK version
-    download          download the latest source code for every JDK version
-    build_parser      build the parser JAR
-    create_jfr        create the JFR file for every available GC
-    build_versions    build the extended metadata file for every available JDK version
-    build             build the JAR with the extended metadata files
-    deploy_mvn        deploy the JARs to Maven
-    deploy_gh         deploy the JARs and XML files to GitHub
-    deploy            the two above
-    deploy_release    deploy the JARs and XML files to GitHub and Maven as releases
-    all               download, build_parser, ..., deploy_gh
-    clear             clear some folders
-    
-Options:
-    --force           forces all forceable commands to execute
+The project uses an optimized GitHub Actions workflow (`.github/workflows/build.yml`) to automatically build artifacts and update the website.
+
+**Triggers:**
+- Push to `main` branch (smart change detection)
+- Every Sunday at midnight UTC (scheduled weekly build)
+- Manual workflow dispatch (with cache control)
+
+**Features:**
+- 🚀 **Parallel JFR Creation**: Creates JFR files for different GCs concurrently
+- 🎯 **Smart Change Detection**: Only builds what changed (collector vs website)
+- 💾 **Intelligent Caching**: Monthly cache rotation for JDK sources and JFR files
+- 🔄 **Network Resilience**: Automatic retry for network operations
+- ✅ **Validation**: Comprehensive prerequisite and artifact validation
+- 🔒 **Security**: Job-level permissions, artifact checksums
+- 📊 **Monitoring**: Build statistics and performance metrics
+
+**Artifact Retention:**
+- Build artifacts: 90 days
+- Build logs: 30 days
+- Temporary artifacts: 1 day
 
 Commands "all", "create_jfr", "build_versions" can be forced 
 by appending "=force" to them, e.g. "all=force".
 
-Environment variables:
+- **normal** (default) - Use all caches (`.cache` and per-GC `jfr` files)
     LOG               set to "true" to print more information
+    GC                if set, create_jfr will only create JFR file for this GC option
 ```
 
-### Snapshots
-
-Run `bin/releaser.py download build_parser build_versions build deploy`.
-Only run `bin/releaser.py create_jfr` if you have a new JDK version installed.
+- `.cache` folder (JDK sources, Renaissance JAR) - Cached monthly per Java version
+- `jfr` folder - Individual JFR files cached per GC type, monthly per Java version
+- Maven dependencies - Cached with version-specific keys
+- All caches automatically invalidate when Java version changes or monthly rotation occurs
 
 ## Publishing of the website
 
@@ -239,7 +242,7 @@ Please do not create GitHub issues for security-related doubts or problems.
 
 ## Code of Conduct
 
-We as members, contributors, and leaders pledge to make participation in our community
+We, as members, contributors, and leaders, pledge to make participation in our community
 a harassment-free experience for everyone. By participating in this project,
 you agree to abide by its [Code of Conduct](https://github.com/SAP/.github/blob/main/CODE_OF_CONDUCT.md) at all times.
 
@@ -247,5 +250,5 @@ License
 -------
 Copyright 2023 - 2025  SAP SE or an SAP affiliate company and contributors.
 Please see our LICENSE for copyright and license information.
-Detailed information including third-party components and their
-licensing/copyright information is available via the REUSE tool.
+Detailed information, including third-party components and their
+licensing/copyright information, is available via the REUSE tool.

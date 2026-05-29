@@ -4,7 +4,7 @@
             <li class="nav-item" role="presentation">
                 <a class="nav-link {{#first}}active{{/first}}" id="{{id}}-tab"
                 data-bs-toggle="tab" href="#{{id}}{{index}}" role="tab"
-                aria-controls="{{id}}{{index}}" aria-selected="true">{{value.name}}</a>
+                aria-controls="{{id}}{{index}}" aria-selected="true">{{value.name}}{{#value.platform}} <span class="badge bg-secondary example-platform-badge">{{.}}</span>{{/value.platform}}</a>
             </li>
         {{/examples}}
     </ul>

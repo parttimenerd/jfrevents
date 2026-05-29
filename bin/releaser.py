@@ -29,7 +29,9 @@ Commands:
     download_urls     print the latest source code download URLs for every JDK version
     download          download the latest source code for every JDK version
     build_parser      build the parser JAR
-    create_jfr        create the JFR file for every available GC
+    list_gc_options   print all available GC options for the current JDK
+    build_jfc         create the JFC configuration file (call once before parallel create_jfr)
+    create_jfr        create the JFR file for every available GC (or single GC if GC env var set)
     build_versions    build the extended metadata file for every available JDK version
     build             build the JAR with the extended metadata files
     deploy_mvn        deploy the JARs to Maven
@@ -47,12 +49,13 @@ by appending "=force" to them, e.g. "all=force".
 
 Environment variables:
     LOG               set to "true" to print more information
+    GC                if set, create_jfr will only create JFR file for this GC option
 """
 
 CURRENT_DIR = os.path.abspath(
     os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 
-JAVA_VERSION = "21" # Java version to use for building and running
+MIN_JAVA_VERSION = 21 # minimum Java version to use for building and running
 CACHE_DIR = f"{CURRENT_DIR}/.cache"
 CACHE_TIME = 60 * 60 * 24  # one day
 RENAISSANCE_JAR = f"{CACHE_DIR}/renaissance.jar"
@@ -80,8 +83,8 @@ def get_java_version() -> str:
         f"java -version 2>&1 | head -n 1 | cut -d '\"' -f 2",
         shell=True).decode("utf-8").strip()
 
-assert get_java_version().startswith(JAVA_VERSION), \
-    f"Java version {JAVA_VERSION} is required to run this script, but found {get_java_version()}"
+assert int(get_java_version().split(".")[0]) >= MIN_JAVA_VERSION, \
+    f"Java version >= {MIN_JAVA_VERSION} is required to run this script, but found {get_java_version()}"
 
 def log(msg: str):
     if LOG:
@@ -97,9 +100,23 @@ def get_github_token() -> Optional[str]:
 
 def execute(args: Union[List[str], str]):
     log(f"Execute: {args}")
-    subprocess.check_call(args, cwd=CURRENT_DIR, shell=isinstance(args, str),
-                          stdout=sys.stdout if LOG else subprocess.DEVNULL,
-                          stderr=sys.stderr if LOG else subprocess.DEVNULL)
+    try:
+        subprocess.check_call(args, cwd=CURRENT_DIR, shell=isinstance(args, str),
+                              stdout=sys.stdout if LOG else subprocess.DEVNULL,
+                              stderr=sys.stderr if LOG else subprocess.DEVNULL)
+    except subprocess.CalledProcessError as e:
+        # If LOG is disabled and command failed, re-run with output to show error details
+        if not LOG:
+            print(f"Command failed: {args}", file=sys.stderr)
+            print(f"Re-running with verbose output to show error details...", file=sys.stderr)
+            print("=" * 80, file=sys.stderr)
+            try:
+                subprocess.check_call(args, cwd=CURRENT_DIR, shell=isinstance(args, str),
+                                      stdout=sys.stdout, stderr=sys.stderr)
+            except subprocess.CalledProcessError:
+                pass  # We expect it to fail again, but now we have output
+            print("=" * 80, file=sys.stderr)
+        raise
 
 
 def download_file(url, path: str, retention: int = CACHE_TIME) -> str:
@@ -124,6 +141,27 @@ def download_file(url, path: str, retention: int = CACHE_TIME) -> str:
                 print(
                     f"Got a HTTP error {ex.code}, please check your GitHub token, it might not be valid")
     return cache_path
+
+
+GRAAL_JFR_DOCS_URL = f"https://raw.githubusercontent.com/{GRAAL_REPO}/master/docs/reference-manual/native-image/JFR.md"
+GRAAL_SUPPORTED_EVENTS_CACHE = f"{CACHE_DIR}/graal_supported_events.json"
+# Refresh weekly — the list rarely changes between GraalVM releases
+GRAAL_EVENTS_CACHE_TIME = 60 * 60 * 24 * 7
+
+
+def fetch_graal_supported_events() -> List[str]:
+    """Fetch the list of Java-level JDK JFR events supported by GraalVM Native Image
+    by parsing the oracle/graal JFR.md documentation."""
+    md_path = download_file(GRAAL_JFR_DOCS_URL, "graal_jfr.md", retention=GRAAL_EVENTS_CACHE_TIME)
+    events = []
+    with open(md_path) as f:
+        for line in f:
+            # Match table cells containing jdk.EventName (with optional footnote markers like [^1])
+            for word in line.split():
+                word = word.strip("|` \t")
+                if word.startswith("jdk.") and word.replace("jdk.", "").isidentifier():
+                    events.append(word[len("jdk."):])
+    return list(dict.fromkeys(events))  # deduplicate, preserve order
 
 
 def download_json(url, path: str) -> Any:
@@ -340,6 +378,30 @@ def download(force: bool = False):
     download_benchmarks()
 
 
+def list_jdk_versions() -> str:
+    """ List all JDK versions as a space-separated string for CI matrix """
+    repos = get_repos()
+    return " ".join(str(repo.version) for repo in repos)
+
+
+def download_jdk_version(version: int):
+    """ Download JDK sources for a specific version """
+    repos = get_repos()
+    repo = [r for r in repos if r.version == version]
+    if not repo:
+        print(f"ERROR: JDK version {version} not found")
+        sys.exit(1)
+
+    repo = repo[0]
+    print(f"Downloading JDK {version}...")
+    download_latest_release(repo)
+
+    graal = get_graal_version(repo.version)
+    if graal:
+        print(f"Downloading Graal for JDK {version}...")
+        download_graal_version(graal)
+
+
 def build_parser():
     execute("mvn clean package assembly:single")
 
@@ -356,8 +418,53 @@ def get_parser_or_build() -> str:
 GC_OPTIONS = []
 
 
-def jfr_file_name(gc_options: str) -> str:
-    return f"{JFR_FOLDER}/sample_{gc_options}.jfr"
+def get_platform() -> str:
+    """Return a short lowercase platform identifier.
+    In CI, set the PLATFORM env var to ${{ runner.os }} (Linux, macOS, Windows).
+    Locally falls back to sys.platform."""
+    env = os.getenv("PLATFORM")
+    if env:
+        return env.lower()
+    import sys as _sys
+    p = _sys.platform
+    if p.startswith("darwin"):
+        return "macos"
+    if p.startswith("win"):
+        return "windows"
+    return "linux"
+
+
+def jfr_file_name(gc_options: str, platform: str = None) -> str:
+    p = platform or get_platform()
+    return f"{JFR_FOLDER}/sample_{p}_{gc_options}.jfr"
+
+
+def jfr_sample_app_file_name(gc_options: str, platform: str = None) -> str:
+    """JFR file produced by the sample app run alongside renaissance."""
+    p = platform or get_platform()
+    return f"{JFR_FOLDER}/sample_{p}_{gc_options}_events.jfr"
+
+
+def run_sample_app_jfr(gc_option: str, platform: str = None):
+    """Run the jfr_sample app with JFR to produce additional event coverage."""
+    if not os.path.exists(GRAALVM_SAMPLE_APP_SRC):
+        return
+    out_dir = GRAALVM_SAMPLE_APP_OUT
+    app_jar = GRAALVM_SAMPLE_APP_JAR
+    jfr_file = jfr_sample_app_file_name(gc_option, platform)
+    os.makedirs(out_dir, exist_ok=True)
+    if not os.path.exists(app_jar):
+        execute(f"javac --add-exports=java.base/jdk.internal.vm.annotation=ALL-UNNAMED "
+                f"-d {out_dir} {GRAALVM_SAMPLE_APP_SRC}")
+        execute(f"jar -cfe {app_jar} jfr_sample.Main -C {out_dir} .")
+    execute(["java",
+             "--add-exports=java.base/jdk.internal.vm.annotation=ALL-UNNAMED",
+             "-Djdk.attach.allowAttachSelf=true",
+             "-XX:+UnlockDiagnosticVMOptions",
+             "-XX:DiagnoseSyncOnValueBasedClasses=2",
+             "-XX:NativeMemoryTracking=summary",
+             f"-XX:StartFlightRecording=filename={jfr_file},settings={JFC_FILE},duration=27s",
+             "-XX:+" + gc_option, "-jar", app_jar])
 
 
 def list_gc_options() -> List[str]:
@@ -374,28 +481,67 @@ def list_gc_options() -> List[str]:
 
 
 def create_jfc():
-    """ Create a JFC file for the current JDK """
+    """ Create a maximalist JFC file: all events enabled, thresholds zeroed, level=all """
+    import re as _re
+    print("Creating JFC configuration file...")
     with open(os.getenv("JAVA_HOME") + "/lib/jfr/profile.jfc") as f:
-        lines = []
-        for line in f.readlines():
-            if 'name="enabled"' in line:
-                lines.append(line.replace(">false<", ">true<"))
-            else:
-                lines.append(line)
-        with open(JFC_FILE, "w") as f2:
-            f2.write("\n".join(lines))
+        content = f.read()
+    # Enable all disabled events
+    content = content.replace(">false<", ">true<")
+    # Zero all thresholds so short-duration events are captured
+    content = _re.sub(
+        r'(<setting name="threshold"[^>]*>)[^<]+(<)',
+        r'\g<1>0 ms\2',
+        content)
+    # Use level=all for DeprecatedInvocation to capture all deprecated calls (not just forRemoval)
+    content = _re.sub(
+        r'(name="jdk\.DeprecatedInvocation".*?<setting name="level">)[^<]+(</setting>)',
+        r'\g<1>all\2',
+        content, flags=_re.DOTALL)
+    # Shorten ThreadDump period so it fires within a 20s recording
+    content = _re.sub(
+        r'(name="jdk\.ThreadDump".*?<setting name="period"[^>]*>)\s*60 s\s*(<)',
+        r'\g<1>10 s\2',
+        content, flags=_re.DOTALL)
+    with open(JFC_FILE, "w") as f2:
+        f2.write(content)
+    print(f"✅ JFC file created at {JFC_FILE}")
 
 
-def create_jfr(gc_option: str = None, force: bool = False):
+def build_jfc():
+    """ Wrapper for create_jfc to be called from CLI """
     create_jfc()
     if not os.path.exists(RENAISSANCE_JAR):
         download_benchmarks()
+
+
+def create_jfr(gc_option: str = None, force: bool = False):
+    # Create JFC if it doesn't exist (for non-CI usage)
+    if not os.path.exists(JFC_FILE):
+        create_jfc()
+    if not os.path.exists(RENAISSANCE_JAR):
+        download_benchmarks()
+
+    # Check for GC environment variable
+    gc_env = os.getenv("GC")
+    if gc_env and not gc_option:
+        gc_option = gc_env
+        print(f"Using GC option from environment: {gc_option}")
+
     jfr_file = jfr_file_name(gc_option)
     if os.path.exists(jfr_file) and not force and os.path.getmtime(
             jfr_file) > os.path.getmtime(JFC_FILE):
         print(f"JFR file {jfr_file} already exists and is up to date")
         return
     if gc_option:
+        # Check that the GC flag is supported before running the full benchmark
+        check = subprocess.run(["java", "-XX:+" + gc_option, "-version"],
+                               capture_output=True)
+        if check.returncode != 0:
+            print(f"Skipping {gc_option}: not supported on this JVM/platform "
+                  f"({check.stderr.decode('utf-8', errors='replace').splitlines()[0] if check.stderr else 'unknown error'})",
+                  file=sys.stderr)
+            return
         print(f"Creating JFR file for GC option {gc_option}")
         try:
             execute(["java",
@@ -406,6 +552,8 @@ def create_jfr(gc_option: str = None, force: bool = False):
             if not os.path.exists(jfr_file_name(gc_option)):
                 raise ex
             print(f"Caught a Java error", file=sys.stderr)
+        # Also run the sample app to capture additional event types not in renaissance
+        run_sample_app_jfr(gc_option)
     else:
         print(
             f"Creating JFR file for GC options: {', '.join(list_gc_options())}")
@@ -446,8 +594,20 @@ def add_graal_events(repo: Repo):
     execute(
         f"java -cp {get_parser_or_build()} me.bechberger.collector.GraalEventAdderKt {metadata_file} {graal_folder(graal_version)} "
         f"{graal_version.url} {graal_version.graal_version} {graal_version.tag} {metadata_file}")
+    add_java_level_graal_events(repo)
 
 
+def add_java_level_graal_events(repo: Repo):
+    """Mark Java-level JDK JFR events supported by GraalVM Native Image using the oracle/graal JFR.md docs."""
+    metadata_file = meta_file_name(repo)
+    events = fetch_graal_supported_events()
+    if not events:
+        print("Warning: no Java-level Graal events fetched from JFR.md — skipping")
+        return
+    events_args = " ".join(events)
+    execute(
+        f"java -cp {get_parser_or_build()} me.bechberger.collector.MarkJavaLevelGraalEventsKt "
+        f"{metadata_file} {events_args} {metadata_file}")
 
 def java_version() -> str:
     return subprocess.check_output(
@@ -457,13 +617,91 @@ def java_version() -> str:
 
 def add_examples(repo: Repo):
     metadata_file = meta_file_name(repo)
+    platform = get_platform()
     for gc_option in list_gc_options():
         gc = gc_option[3:]
-        label = gc
-        description = f"Run of renaissance benchmark with {gc} on {java_version()}"
+        label = f"{platform}_{gc}"
+        description = f"Run of renaissance benchmark with {gc} on Java {java_version().strip()} ({platform})"
+        jfr_file = jfr_file_name(gc_option, platform)
+        if not os.path.exists(jfr_file):
+            print(f"Skipping {label}: JFR file not found: {jfr_file}")
+            continue
+        # Include the sample app JFR if present (provides additional event coverage)
+        sample_file = jfr_sample_app_file_name(gc_option, platform)
+        files_arg = f"{jfr_file},{sample_file}" if os.path.exists(sample_file) else jfr_file
         execute(
             f"java -cp {get_parser_or_build()} me.bechberger.collector.ExampleAdderKt {metadata_file} "
-            f"{label} \"{description}\" {jfr_file_name(gc_option)} {metadata_file}")
+            f"--platform={platform} {label} \"{description}\" {files_arg} {metadata_file}")
+
+
+GRAALVM_SAMPLE_APP_SRC = f"{CURRENT_DIR}/src/main/java/jfr_sample/Main.java"
+GRAALVM_SAMPLE_APP_OUT = f"{CURRENT_DIR}/.cache/jfr_sample_out"
+GRAALVM_SAMPLE_APP_JAR = f"{CURRENT_DIR}/.cache/jfr_sample_app.jar"
+GRAALVM_SAMPLE_APP_BIN = f"{CURRENT_DIR}/jfr_sample_app"
+
+
+def graalvm_jfr_file_name(mode: str, gc: str = "native") -> str:
+    p = get_platform()
+    suffix = gc if mode == "jvm" else "native"
+    return f"{JFR_FOLDER}/sample_{p}_graalvm_{suffix}.jfr"
+
+
+def create_jfr_graalvm_native():
+    """Compile the tiny JFR sample app to native image and run it with JFR enabled."""
+    if not os.path.exists(JFC_FILE):
+        create_jfc()
+    jfr_file = graalvm_jfr_file_name("native")
+    os.makedirs(GRAALVM_SAMPLE_APP_OUT, exist_ok=True)
+    execute(f"javac -d {GRAALVM_SAMPLE_APP_OUT} {GRAALVM_SAMPLE_APP_SRC}")
+    execute(f"jar -cfe {GRAALVM_SAMPLE_APP_JAR} jfr_sample.Main -C {GRAALVM_SAMPLE_APP_OUT} .")
+    execute(f"native-image --enable-monitoring=jfr -jar {GRAALVM_SAMPLE_APP_JAR} "
+            f"{GRAALVM_SAMPLE_APP_BIN}")
+    execute([GRAALVM_SAMPLE_APP_BIN,
+             f"-XX:StartFlightRecording=filename={jfr_file},settings={JFC_FILE},duration=18s"])
+
+
+def create_jfr_graal(force: bool = False):
+    """Create JFR samples using GraalVM. MODE env var selects 'jvm' (default) or 'native'."""
+    mode = os.getenv("MODE", "jvm")
+    if mode == "native":
+        create_jfr_graalvm_native()
+    else:
+        if not os.path.exists(JFC_FILE):
+            create_jfc()
+        if not os.path.exists(RENAISSANCE_JAR):
+            download_benchmarks()
+        gc_option = "UseG1GC"
+        jfr_file = graalvm_jfr_file_name("jvm", "G1GC")
+        if os.path.exists(jfr_file) and not force:
+            print(f"GraalVM JVM JFR file already exists: {jfr_file}")
+            return
+        execute(["java",
+                 f"-XX:StartFlightRecording=filename={jfr_file},settings={JFC_FILE}",
+                 "-XX:+" + gc_option, "-jar", RENAISSANCE_JAR, "-t", "5", "-r", "1", "all"])
+
+
+def add_graal_examples(repo: Repo):
+    """Add GraalVM JFR sample examples to the metadata."""
+    import glob as _glob
+    metadata_file = meta_file_name(repo)
+    graal_files = sorted(_glob.glob(f"{JFR_FOLDER}/sample_*_graalvm_*.jfr"))
+    if not graal_files:
+        print("No GraalVM JFR files found, skipping graal examples")
+        return
+    for f in graal_files:
+        base = os.path.basename(f)[len("sample_"):-len(".jfr")]  # e.g. linux_graalvm_G1GC
+        parts = base.split("_graalvm_")
+        plat, suffix = parts[0], parts[1]  # linux, G1GC or native
+        label = f"graalvm_{plat}_{suffix}"
+        if suffix == "native":
+            desc = f"GraalVM Native Image JFR recording ({plat})"
+            platform_tag = "graalvm-native"
+        else:
+            desc = f"GraalVM JVM with {suffix} on {plat}"
+            platform_tag = "graalvm"
+        execute(
+            f"java -cp {get_parser_or_build()} me.bechberger.collector.ExampleAdderKt "
+            f"{metadata_file} --platform={platform_tag} {label} \"{desc}\" {f} {metadata_file}")
 
 
 def add_additional_descriptions(repo: Repo):
@@ -502,9 +740,13 @@ def build_version(repo: Repo, force: bool = False):
     download_repo_if_not_exists(repo)
     meta_file = meta_file_name(repo)
     meta_wo_examples = meta_file_name(repo, wo_examples=True)
-    # copy metadata
-    generated_example_min_mtime = min(os.path.getmtime(jfr_file_name(gc_option))
-                                      for gc_option in list_gc_options())
+    # copy metadata — consider all JFR files present regardless of platform
+    import glob as _glob
+    all_jfr_files = _glob.glob(f"{JFR_FOLDER}/sample_*.jfr")
+    generated_example_min_mtime = min(
+        (os.path.getmtime(f) for f in all_jfr_files),
+        default=0
+    )
     if os.path.exists(meta_file):
         meta_file_mtime = os.path.getmtime(meta_file)
         if not force and meta_file_mtime > \
@@ -529,6 +771,8 @@ def build_version(repo: Repo, force: bool = False):
     execute(f"cp {meta_file} {meta_wo_examples}")
     print(f"Add examples from JFR files for version {repo.version}")
     add_examples(repo)
+    print(f"Add GraalVM examples from JFR files for version {repo.version}")
+    add_graal_examples(repo)
     print(f"Add source code context for version {repo.version}")
     add_source_code_context(repo)
     add_ai_generated_descriptions(repo)
@@ -563,10 +807,10 @@ def build():
         f.write("\n".join(
             f"{repo.version}: {get_latest_release_name_and_zip_url(repo).name}"
             for repo in get_repos()))
-        print("Build loader package")
-        execute(f"mvn -f pom_loader.xml package assembly:single")
     with open(RESOURCES_FOLDER + "/time", "w") as f:
         f.write(str(int(time.time())))
+    print("Build loader package")
+    execute(f"mvn -f pom_loader.xml package assembly:single")
 
 
 def clear_harness_and_launchers():
@@ -665,16 +909,21 @@ class CLIArgs:
 
 
 def parse_cli_args() -> CLIArgs:
-    available_commands = ["versions", "download_urls", "download",
-                          "build_parser", "create_jfr", "build_versions",
+    available_commands = ["versions", "download_urls", "download", "list_jdk_versions", "download_jdk_version",
+                          "build_parser", "list_gc_options", "build_jfc", "create_jfr", "create_jfr_graal",
+                          "build_versions",
                           "build", "deploy_mvn", "deploy_gh", "deploy",
                           "deploy_release", "clear", "all", "tags"]
-    forcable_commands = ["all", "create_jfr", "build_versions"]
+    forcable_commands = ["all", "create_jfr", "create_jfr_graal", "build_versions"]
     commands = []
     forced_commands = []
+    jdk_version_arg = None
+
     for i, arg in enumerate(sys.argv[1:]):
         if arg == "--force":
             forced_commands = forcable_commands
+        elif arg.startswith("--jdk-version="):
+            jdk_version_arg = int(arg.split("=")[1])
         else:
             cmd, *args = arg.split("=")
             if cmd not in available_commands:
@@ -699,11 +948,11 @@ def parse_cli_args() -> CLIArgs:
                 sys.exit(1)
     if not commands:
         print(HELP)
-    return CLIArgs(commands, forced_commands)
+    return CLIArgs(commands, forced_commands), jdk_version_arg
 
 
 def cli():
-    args = parse_cli_args()
+    args, jdk_version_arg = parse_cli_args()
     commands = args.commands
     forced = args.forced_commands
 
@@ -716,8 +965,13 @@ def cli():
                 r in get_repos())),
         "download_urls": download_urls,
         "download": download,
+        "list_jdk_versions": lambda: print(list_jdk_versions()),
+        "download_jdk_version": lambda: download_jdk_version(jdk_version_arg if jdk_version_arg else int(os.getenv("JDK_VERSION", "0"))),
         "build_parser": build_parser,
+        "list_gc_options": lambda: print(" ".join(list_gc_options())),
+        "build_jfc": build_jfc,
         "create_jfr": create_jfr,
+        "create_jfr_graal": create_jfr_graal,
         "build_versions": build_versions,
         "build": build,
         "deploy_mvn": lambda: deploy_maven(snapshot=True),
