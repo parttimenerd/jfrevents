@@ -55,7 +55,7 @@ Environment variables:
 CURRENT_DIR = os.path.abspath(
     os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 
-MIN_JAVA_VERSION = 21 # minimum Java version to use for building and running
+MIN_JAVA_VERSION = 25 # minimum Java version to use for building and running
 CACHE_DIR = f"{CURRENT_DIR}/.cache"
 CACHE_TIME = 60 * 60 * 24  # one day
 RENAISSANCE_JAR = f"{CACHE_DIR}/renaissance.jar"
