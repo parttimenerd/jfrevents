@@ -654,8 +654,19 @@ def create_jfr_graalvm_native():
     os.makedirs(GRAALVM_SAMPLE_APP_OUT, exist_ok=True)
     execute(f"javac -d {GRAALVM_SAMPLE_APP_OUT} {GRAALVM_SAMPLE_APP_SRC}")
     execute(f"jar -cfe {GRAALVM_SAMPLE_APP_JAR} jfr_sample.Main -C {GRAALVM_SAMPLE_APP_OUT} .")
-    execute(f"native-image --enable-monitoring=jfr -jar {GRAALVM_SAMPLE_APP_JAR} "
+    java_home = os.getenv("JAVA_HOME", "")
+    native_image = os.path.join(java_home, "bin", "native-image") if java_home else "native-image"
+    execute(f"{native_image} --enable-monitoring=jfr -jar {GRAALVM_SAMPLE_APP_JAR} "
             f"{GRAALVM_SAMPLE_APP_BIN}")
+    # Verify JFR was compiled in before running the full benchmark
+    result = subprocess.run([GRAALVM_SAMPLE_APP_BIN, "-XX:PrintFlags="],
+                            capture_output=True, text=True, cwd=CURRENT_DIR)
+    if "StartFlightRecording" not in result.stdout and "StartFlightRecording" not in result.stderr:
+        raise RuntimeError(
+            f"Native image was built without JFR support (--enable-monitoring=jfr had no effect). "
+            f"native-image binary used: {native_image}\n"
+            f"PrintFlags output: {result.stdout[:500]}\n{result.stderr[:500]}"
+        )
     execute([GRAALVM_SAMPLE_APP_BIN,
              f"-XX:StartFlightRecording=filename={jfr_file},settings={JFC_FILE},duration=18s"])
 
