@@ -686,9 +686,14 @@ def create_jfr_graal(force: bool = False):
         if os.path.exists(jfr_file) and not force:
             print(f"GraalVM JVM JFR file already exists: {jfr_file}")
             return
-        execute(["java",
-                 f"-XX:StartFlightRecording=filename={jfr_file},settings={JFC_FILE}",
-                 "-XX:+" + gc_option, "-jar", RENAISSANCE_JAR, "-t", "5", "-r", "1", "all"])
+        try:
+            execute(["java",
+                     f"-XX:StartFlightRecording=filename={jfr_file},settings={JFC_FILE}",
+                     "-XX:+" + gc_option, "-jar", RENAISSANCE_JAR, "-t", "5", "-r", "1", "all"])
+        except subprocess.CalledProcessError as ex:
+            if not os.path.exists(jfr_file):
+                raise ex
+            print(f"Caught a Java error (renaissance benchmark failures); JFR file was still produced.", file=sys.stderr)
 
 
 def add_graal_examples(repo: Repo):
