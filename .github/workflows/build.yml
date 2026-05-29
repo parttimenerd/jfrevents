@@ -777,6 +777,7 @@ jobs:
     needs: [changes, build]
     if: |
       always() &&
+      github.repository == 'SAP/jfrevents' &&
       github.ref == 'refs/heads/main' &&
       (needs.build.result == 'success' || (needs.changes.outputs.website == 'true' && needs.build.result == 'skipped'))
     runs-on: ubuntu-latest
@@ -905,17 +906,14 @@ jobs:
           java -jar target/jfrevents-site-generator.jar generate site --hide-missing-descriptions
 
       - name: Set up Pages
-        if: github.repository == 'SAP/jfrevents'
         uses: actions/configure-pages@v4
 
       - name: Upload pages artifact
-        if: github.repository == 'SAP/jfrevents'
         uses: actions/upload-pages-artifact@v3
         with:
           path: 'website/site'
 
       - name: Deploy to GitHub Pages
-        if: github.repository == 'SAP/jfrevents'
         id: deployment
         uses: actions/deploy-pages@v4
 
